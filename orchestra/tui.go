@@ -680,9 +680,9 @@ func (m TUIModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.help.View(m.keys))
 
-	// Center horizontally
+	// Center both horizontally and vertically
 	content := b.String()
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m TUIModel) viewTabs() string {
