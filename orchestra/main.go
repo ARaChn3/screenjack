@@ -49,8 +49,9 @@ var (
 	titleStyle   = lipgloss.NewStyle().Foreground(rust).Bold(true)
 	labelStyle   = lipgloss.NewStyle().Foreground(stone400)
 	valueStyle   = lipgloss.NewStyle().Foreground(stone100)
-	cursorStyle  = lipgloss.NewStyle().Foreground(amber).Bold(true)  // cursor position
-	enabledStyle = lipgloss.NewStyle().Foreground(cyan).Bold(true)   // enabled/selected items
+	cursorStyle        = lipgloss.NewStyle().Foreground(amber).Bold(true)                      // cursor position
+	enabledStyle       = lipgloss.NewStyle().Foreground(cyan).Bold(true)                       // enabled/selected items
+	cursorEnabledStyle = lipgloss.NewStyle().Foreground(cyan).Background(lipgloss.Color("#44403C")).Bold(true) // cursor on enabled
 	mutedStyle   = lipgloss.NewStyle().Foreground(stone500)
 	successStyle = lipgloss.NewStyle().Foreground(emerald)
 	errorStyle   = lipgloss.NewStyle().Foreground(rose)
@@ -704,15 +705,17 @@ func (m Model) renderBuild(w int) string {
 	for i, t := range m.targets {
 		mark := "○"
 		style := labelStyle
-		if t.selected {
+		isCursor := m.section == SecBuild && i == m.cursor
+
+		if t.selected && isCursor {
+			mark = "▸"
+			style = cursorEnabledStyle
+		} else if t.selected {
 			mark = enabledStyle.Render("●")
 			style = enabledStyle
-		}
-		if m.section == SecBuild && i == m.cursor {
+		} else if isCursor {
+			mark = "▸"
 			style = cursorStyle
-			if !t.selected {
-				mark = "▸"
-			}
 		}
 		lines = append(lines, style.Render(fmt.Sprintf("%s %s", mark, t.name)))
 	}
@@ -758,15 +761,18 @@ func (m Model) renderAssets(w int) string {
 			a := m.assets[i]
 			prefix := "  "
 			style := labelStyle
-			if a == m.selectedAsset {
+			isSelected := a == m.selectedAsset
+			isCursor := m.section == SecAssets && vi == m.cursor
+
+			if isSelected && isCursor {
+				prefix = "▸ "
+				style = cursorEnabledStyle
+			} else if isSelected {
 				prefix = enabledStyle.Render("● ")
 				style = enabledStyle
-			}
-			if m.section == SecAssets && vi == m.cursor {
+			} else if isCursor {
+				prefix = "▸ "
 				style = cursorStyle
-				if a != m.selectedAsset {
-					prefix = "▸ "
-				}
 			}
 			lines = append(lines, prefix+style.Render(a))
 		}
