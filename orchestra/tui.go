@@ -263,6 +263,8 @@ type TUIModel struct {
 	assetList     list.Model
 	selectedAsset string
 	filePicker    filepicker.Model
+	pathInput     textinput.Model // for typing paths directly
+	pathInputMode bool            // true when typing path, false when browsing
 
 	// Ducky tab
 	duckyOS      string
@@ -325,6 +327,12 @@ func NewTUIModel() TUIModel {
 	payloadInput.SetValue("screenjack")
 	payloadInput.Width = 20
 
+	// Path input for adding assets
+	pathInput := textinput.New()
+	pathInput.Placeholder = "~/path/to/file.gif"
+	pathInput.Width = 50
+	pathInput.Prompt = "> "
+
 	// Help
 	h := help.New()
 	h.ShowAll = false
@@ -336,6 +344,7 @@ func NewTUIModel() TUIModel {
 		targetList:   targetList,
 		assetList:    assetList,
 		filePicker:   fp,
+		pathInput:    pathInput,
 		duckyOS:      "linux",
 		urlInput:     urlInput,
 		payloadInput: payloadInput,
@@ -508,10 +517,45 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case ModalFilePicker:
+		// If path input is focused, handle typing
+		if m.pathInputMode {
+			switch msg.String() {
+			case "esc":
+				m.pathInputMode = false
+				m.pathInput.Blur()
+				return m, nil
+			case "enter":
+				// Try to add the file
+				path := expandPath(m.pathInput.Value())
+				if path != "" {
+					m.pathInput.SetValue("")
+					m.pathInput.Blur()
+					m.pathInputMode = false
+					return m, func() tea.Msg { return fileSelectedMsg{path: path} }
+				}
+				return m, nil
+			case "tab":
+				// Switch to browser mode
+				m.pathInputMode = false
+				m.pathInput.Blur()
+				return m, nil
+			default:
+				var cmd tea.Cmd
+				m.pathInput, cmd = m.pathInput.Update(msg)
+				return m, cmd
+			}
+		}
+
+		// Browser mode
 		switch {
 		case key.Matches(msg, m.keys.Back):
 			m.modal = ModalAssets
 			return m, nil
+		case msg.String() == "/", msg.String() == ":":
+			// Switch to path input mode
+			m.pathInputMode = true
+			m.pathInput.Focus()
+			return m, textinput.Blink
 		default:
 			var cmd tea.Cmd
 			m.filePicker, cmd = m.filePicker.Update(msg)
@@ -889,8 +933,37 @@ func (m TUIModel) viewModal() string {
 		content += "\n\n[n] add new  [enter] select  [esc] close"
 
 	case ModalFilePicker:
-		title = "Select File"
-		content = m.filePicker.View()
+		title = "Add Asset"
+
+		// Path input section
+		pathLabel := "Type path:"
+		if m.pathInputMode {
+			pathLabel = styleSuccess.Render("Type path:")
+		}
+		pathSection := lipgloss.JoinVertical(lipgloss.Left,
+			pathLabel,
+			m.pathInput.View(),
+		)
+
+		// Browser section
+		browserLabel := "Or browse:"
+		if !m.pathInputMode {
+			browserLabel = styleSuccess.Render("Browse:")
+		}
+		browserSection := lipgloss.JoinVertical(lipgloss.Left,
+			browserLabel,
+			m.filePicker.View(),
+		)
+
+		helpText := styleStatus.Render("[/] type path  [tab] switch  [enter] select  [esc] back")
+
+		content = lipgloss.JoinVertical(lipgloss.Left,
+			pathSection,
+			"",
+			browserSection,
+			"",
+			helpText,
+		)
 
 	case ModalLogs:
 		title = "HTTP Logs"
