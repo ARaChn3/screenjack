@@ -312,6 +312,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func expandPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
 func (m Model) updateAddAsset(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -319,7 +328,7 @@ func (m Model) updateAddAsset(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.assetInput.Blur()
 		return m, nil
 	case "enter":
-		src := m.assetInput.Value()
+		src := expandPath(m.assetInput.Value())
 		if src == "" {
 			m.addingAsset = false
 			m.assetInput.Blur()
