@@ -418,9 +418,11 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case buildDoneMsg:
 		m.buildLog = msg.log
 		if msg.ok {
-			m.status = styleSuccess.Render(msg.msg)
+			m.buildMsg = styleSuccess.Render("✓ " + msg.msg)
+			m.status = styleSuccess.Render("Build complete")
 		} else {
-			m.status = styleError.Render(msg.msg)
+			m.buildMsg = styleError.Render("✗ " + msg.msg)
+			m.status = styleError.Render("Build failed")
 		}
 		return m, nil
 
@@ -761,7 +763,7 @@ func (m *TUIModel) genDucky() {
 }
 
 func (m TUIModel) View() string {
-	if m.width < 40 || m.height < 15 {
+	if m.width < 60 || m.height < 20 {
 		return "Terminal too small"
 	}
 
@@ -770,31 +772,93 @@ func (m TUIModel) View() string {
 		return m.viewModal()
 	}
 
-	var b strings.Builder
-
 	// Header with tabs
-	b.WriteString(m.viewTabs())
-	b.WriteString("\n\n")
+	header := m.viewTabs()
 
 	// Main content based on active tab
+	var mainContent string
 	switch m.activeTab {
 	case TabBuild:
-		b.WriteString(m.viewBuildTab())
+		mainContent = m.viewBuildTab()
 	case TabDucky:
-		b.WriteString(m.viewDuckyTab())
+		mainContent = m.viewDuckyTab()
 	case TabServer:
-		b.WriteString(m.viewServerTab())
+		mainContent = m.viewServerTab()
 	}
 
-	// Footer
-	b.WriteString("\n")
-	b.WriteString(styleStatus.Render(m.status))
-	b.WriteString("\n")
-	b.WriteString(m.help.View(m.keys))
+	// Right sidebar with status indicators
+	sidebar := m.viewSidebar()
 
-	// Center both horizontally and vertically
-	content := b.String()
+	// Two-column layout: main content | sidebar
+	mainWidth := m.width - 30 // sidebar is ~25 wide
+	mainBox := lipgloss.NewStyle().Width(mainWidth).Render(mainContent)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, mainBox, "  ", sidebar)
+
+	// Footer
+	footer := lipgloss.JoinVertical(lipgloss.Left,
+		styleStatus.Render(m.status),
+		m.help.View(m.keys),
+	)
+
+	// Combine all
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		header,
+		"",
+		body,
+		"",
+		footer,
+	)
+
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m TUIModel) viewSidebar() string {
+	sidebarStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorStone600).
+		Padding(1, 1).
+		Width(25)
+
+	// Server status
+	serverTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Server")
+	var serverStatus string
+	if m.server.IsRunning() {
+		serverStatus = styleSuccess.Render("● Running")
+		serverStatus += "\n" + styleStatus.Render(fmt.Sprintf("  :%d", m.server.Port()))
+		logs := m.server.Logs()
+		if len(logs) > 0 {
+			serverStatus += "\n" + styleStatus.Render(fmt.Sprintf("  %d reqs", len(logs)))
+		}
+	} else {
+		serverStatus = styleError.Render("○ Stopped")
+	}
+
+	// Build status
+	buildTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build")
+	buildStatus := styleStatus.Render("Ready")
+	if m.buildMsg != "" {
+		buildStatus = m.buildMsg
+	}
+
+	// Asset status
+	assetTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Asset")
+	assetStatus := styleStatus.Render("(none)")
+	if m.selectedAsset != "" {
+		assetStatus = styleSuccess.Render(m.selectedAsset)
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		serverTitle,
+		serverStatus,
+		"",
+		buildTitle,
+		buildStatus,
+		"",
+		assetTitle,
+		assetStatus,
+	)
+
+	return sidebarStyle.Render(content)
 }
 
 func (m TUIModel) viewTabs() string {
