@@ -789,18 +789,16 @@ func (m TUIModel) View() string {
 	// Right sidebar with status indicators
 	sidebar := m.viewSidebar()
 
-	// Two-column layout: main content | sidebar
-	mainWidth := m.width - 30 // sidebar is ~25 wide
-	mainBox := lipgloss.NewStyle().Width(mainWidth).Render(mainContent)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, mainBox, "  ", sidebar)
+	// Two-column layout with gap
+	body := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, "    ", sidebar)
 
 	// Footer
-	footer := lipgloss.JoinVertical(lipgloss.Left,
+	footer := lipgloss.JoinVertical(lipgloss.Center,
 		styleStatus.Render(m.status),
 		m.help.View(m.keys),
 	)
 
-	// Combine all
+	// Combine all - center everything
 	content := lipgloss.JoinVertical(lipgloss.Center,
 		header,
 		"",
