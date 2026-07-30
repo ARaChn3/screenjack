@@ -110,22 +110,38 @@ var (
 			Bold(true)
 
 	styleActiveTab = lipgloss.NewStyle().
-			Foreground(colorAmber).
+			Foreground(colorStone800).
+			Background(colorAmber).
 			Bold(true).
-			Underline(true)
+			Padding(0, 2)
 
 	styleInactiveTab = lipgloss.NewStyle().
-				Foreground(colorStone400)
+				Foreground(colorStone400).
+				Padding(0, 2)
 
 	styleBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorStone600).
-			Padding(0, 1)
+			Padding(1, 2)
 
 	styleActiveBox = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorRust).
-			Padding(0, 1)
+			BorderForeground(colorAmber).
+			Padding(1, 2)
+
+	styleLabel = lipgloss.NewStyle().
+			Foreground(colorStone400).
+			Width(12).
+			Align(lipgloss.Right)
+
+	styleValue = lipgloss.NewStyle().
+			Foreground(colorStone50).
+			PaddingLeft(1)
+
+	styleFocusedValue = lipgloss.NewStyle().
+				Foreground(colorAmber).
+				Bold(true).
+				PaddingLeft(1)
 
 	styleStatus = lipgloss.NewStyle().
 			Foreground(colorStone400).
@@ -747,80 +763,119 @@ func (m TUIModel) viewTabs() string {
 		tabs = append(tabs, style.Render(i.String()))
 	}
 
-	tabLine := strings.Join(tabs, "  ")
+	tabBar := lipgloss.JoinHorizontal(lipgloss.Center, tabs...)
 
-	return styleTitle.Render(logo) + "\n\n  " + tabLine
+	return lipgloss.JoinVertical(lipgloss.Center,
+		styleTitle.Render(logo),
+		"",
+		tabBar,
+	)
 }
 
 func (m TUIModel) viewBuildTab() string {
-	var b strings.Builder
+	// Targets box
+	targetTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Targets")
+	targetContent := m.targetList.View()
+	targetsBox := styleBox.Width(50).Render(
+		lipgloss.JoinVertical(lipgloss.Left, targetTitle, "", targetContent),
+	)
 
-	b.WriteString("  Targets\n")
-	b.WriteString("  ───────\n")
-	b.WriteString(m.targetList.View())
-	b.WriteString("\n\n")
-
+	// Asset info box
 	asset := m.selectedAsset
 	if asset == "" {
 		asset = "(none)"
 	}
-	b.WriteString(fmt.Sprintf("  Asset: %s\n", styleSuccess.Render(asset)))
+	assetRow := lipgloss.JoinHorizontal(lipgloss.Left,
+		styleLabel.Render("Asset:"),
+		styleValue.Render(asset),
+	)
+	assetBox := styleBox.Width(50).Render(assetRow)
 
-	return b.String()
+	return lipgloss.JoinVertical(lipgloss.Center, targetsBox, "", assetBox)
 }
 
 func (m TUIModel) viewDuckyTab() string {
-	var b strings.Builder
+	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Ducky Script Generator")
 
-	b.WriteString("  Ducky Script Generator\n")
-	b.WriteString("  ──────────────────────\n\n")
+	// Build rows with proper alignment
+	rows := make([]string, 3)
 
-	// OS selector
-	osCursor := "  "
-	osStyle := lipgloss.NewStyle()
+	// OS row
+	osLabel := styleLabel.Render("Target OS:")
+	osValue := m.duckyOS
 	if m.duckyFocus == 0 {
-		osCursor = "> "
-		osStyle = osStyle.Foreground(colorAmber).Bold(true)
+		osValue = styleFocusedValue.Render(m.duckyOS + "  [space to toggle]")
+	} else {
+		osValue = styleValue.Render(m.duckyOS)
 	}
-	b.WriteString(fmt.Sprintf("%sTarget OS: %s  (space to toggle)\n", osCursor, osStyle.Render(m.duckyOS)))
+	rows[0] = lipgloss.JoinHorizontal(lipgloss.Left, osLabel, osValue)
 
-	// URL input
-	urlCursor := "  "
+	// URL row
+	urlLabel := styleLabel.Render("URL:")
+	urlValue := m.urlInput.View()
 	if m.duckyFocus == 1 {
-		urlCursor = "> "
+		urlLabel = lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Width(12).Align(lipgloss.Right).Render("URL:")
 	}
-	b.WriteString(fmt.Sprintf("%sURL: %s\n", urlCursor, m.urlInput.View()))
+	rows[1] = lipgloss.JoinHorizontal(lipgloss.Left, urlLabel, " ", urlValue)
 
-	// Payload input
-	payloadCursor := "  "
+	// Payload row
+	payloadLabel := styleLabel.Render("Payload:")
+	payloadValue := m.payloadInput.View()
 	if m.duckyFocus == 2 {
-		payloadCursor = "> "
+		payloadLabel = lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Width(12).Align(lipgloss.Right).Render("Payload:")
 	}
-	b.WriteString(fmt.Sprintf("%sPayload: %s\n", payloadCursor, m.payloadInput.View()))
+	rows[2] = lipgloss.JoinHorizontal(lipgloss.Left, payloadLabel, " ", payloadValue)
 
-	return b.String()
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	box := styleBox.Width(60).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", content),
+	)
+
+	return box
 }
 
 func (m TUIModel) viewServerTab() string {
-	var b strings.Builder
+	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("HTTP Server")
 
-	b.WriteString("  HTTP Server\n")
-	b.WriteString("  ───────────\n\n")
-
-	status := styleError.Render("Stopped")
+	// Status row
+	statusLabel := styleLabel.Render("Status:")
+	var statusValue string
 	if m.server.IsRunning() {
-		status = styleSuccess.Render(fmt.Sprintf("Running on %s:%d", m.serverIP, m.server.Port()))
+		statusValue = styleSuccess.Render(fmt.Sprintf("Running on %s:%d", m.serverIP, m.server.Port()))
+	} else {
+		statusValue = styleError.Render("Stopped")
 	}
-	b.WriteString(fmt.Sprintf("  Status: %s\n", status))
+	statusRow := lipgloss.JoinHorizontal(lipgloss.Left, statusLabel, " ", statusValue)
 
+	// Requests row
+	var requestsRow string
 	if m.server.IsRunning() {
 		logs := m.server.Logs()
-		if len(logs) > 0 {
-			b.WriteString(fmt.Sprintf("\n  Recent requests: %d\n", len(logs)))
-		}
+		reqLabel := styleLabel.Render("Requests:")
+		reqValue := styleValue.Render(fmt.Sprintf("%d", len(logs)))
+		requestsRow = lipgloss.JoinHorizontal(lipgloss.Left, reqLabel, " ", reqValue)
 	}
 
-	return b.String()
+	// IP row
+	ipLabel := styleLabel.Render("Local IP:")
+	ipValue := styleValue.Render(m.serverIP)
+	ipRow := lipgloss.JoinHorizontal(lipgloss.Left, ipLabel, " ", ipValue)
+
+	// Port row
+	portLabel := styleLabel.Render("Port:")
+	portValue := styleValue.Render(fmt.Sprintf("%d", m.server.Port()))
+	portRow := lipgloss.JoinHorizontal(lipgloss.Left, portLabel, " ", portValue)
+
+	content := lipgloss.JoinVertical(lipgloss.Left, statusRow, "", ipRow, portRow)
+	if requestsRow != "" {
+		content = lipgloss.JoinVertical(lipgloss.Left, statusRow, "", ipRow, portRow, "", requestsRow)
+	}
+
+	box := styleBox.Width(50).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", content),
+	)
+
+	return box
 }
 
 func (m TUIModel) viewModal() string {
