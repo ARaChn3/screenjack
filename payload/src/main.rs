@@ -379,7 +379,8 @@ mod win {
                 ReleaseDC(None, hdc);
             }
 
-            let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0).unwrap();
+            let kb_hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0).unwrap();
+            let mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook_proc), instance, 0).unwrap();
 
             let class_name = w!("ScreenjackWindow");
             let wc = WNDCLASSW {
@@ -421,7 +422,8 @@ mod win {
                 DispatchMessageW(&msg);
             }
 
-            UnhookWindowsHookEx(hook).unwrap();
+            UnhookWindowsHookEx(kb_hook).unwrap();
+            UnhookWindowsHookEx(mouse_hook).unwrap();
         }
     }
 
@@ -455,6 +457,14 @@ mod win {
             if !SHOULD_EXIT.load(Ordering::Relaxed) {
                 return LRESULT(1);
             }
+        }
+        unsafe { CallNextHookEx(None, code, wparam, lparam) }
+    }
+
+    // ponytail: blocks all mouse input while active
+    unsafe extern "system" fn mouse_hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if code >= 0 && !SHOULD_EXIT.load(Ordering::Relaxed) {
+            return LRESULT(1);
         }
         unsafe { CallNextHookEx(None, code, wparam, lparam) }
     }
