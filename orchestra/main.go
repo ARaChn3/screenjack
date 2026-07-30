@@ -195,7 +195,7 @@ func newModel() Model {
 	return Model{
 		assetInput: assetIn,
 		targets: []Target{
-			{"linux-musl", "x86_64-unknown-linux-musl", cfg.Build.Linux},
+			{"linux", "x86_64-unknown-linux-gnu", cfg.Build.Linux},
 			{"win-gnu", "x86_64-pc-windows-gnu", cfg.Build.Windows},
 		},
 		duckyOS:       cfg.Ducky.OS,
@@ -445,6 +445,8 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "x":
 		if m.server.IsRunning() {
 			m.showHttpLog = true
+		} else {
+			m.buildMsg = warnStyle.Render("start server first (h)")
 		}
 		return m, nil
 	}
