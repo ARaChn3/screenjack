@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/help"
@@ -272,6 +273,7 @@ type TUIModel struct {
 	payloadInput textinput.Model
 	duckyFocus   int // 0=OS, 1=URL, 2=payload
 	duckyMsg     string
+	duckyLastGen string // timestamp of last generation
 
 	// Server tab
 	server   *Server
@@ -760,6 +762,7 @@ func (m *TUIModel) genDucky() {
 
 	os.MkdirAll("../ducky", 0755)
 	os.WriteFile("../ducky/payload_"+m.duckyOS+".txt", []byte(b.String()), 0644)
+	m.duckyLastGen = time.Now().Format("15:04:05")
 }
 
 func (m TUIModel) View() string {
@@ -845,6 +848,13 @@ func (m TUIModel) viewSidebar() string {
 		assetStatus = styleSuccess.Render(m.selectedAsset)
 	}
 
+	// Ducky status
+	duckyTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Ducky")
+	duckyStatus := styleStatus.Render("Not generated")
+	if m.duckyLastGen != "" {
+		duckyStatus = styleSuccess.Render("✓ " + m.duckyOS + " @ " + m.duckyLastGen)
+	}
+
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		serverTitle,
 		serverStatus,
@@ -854,6 +864,9 @@ func (m TUIModel) viewSidebar() string {
 		"",
 		assetTitle,
 		assetStatus,
+		"",
+		duckyTitle,
+		duckyStatus,
 	)
 
 	return sidebarStyle.Render(content)
