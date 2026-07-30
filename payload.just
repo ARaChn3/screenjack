@@ -52,6 +52,5 @@ clean:
 
 # Setup cross-compile toolchain
 setup:
-    rustup target add x86_64-unknown-linux-musl
     rustup target add x86_64-pc-windows-gnu
     @echo "Also run: sudo pacman -S mingw-w64-gcc"

@@ -39,6 +39,7 @@ var (
 	amber    = lipgloss.Color("#F59E0B")
 	orange   = lipgloss.Color("#EA580C")
 	emerald  = lipgloss.Color("#10B981")
+	cyan     = lipgloss.Color("#06B6D4")
 	rose     = lipgloss.Color("#F43F5E")
 	stone100 = lipgloss.Color("#F5F5F4")
 	stone400 = lipgloss.Color("#A8A29E")
@@ -48,7 +49,8 @@ var (
 	titleStyle   = lipgloss.NewStyle().Foreground(rust).Bold(true)
 	labelStyle   = lipgloss.NewStyle().Foreground(stone400)
 	valueStyle   = lipgloss.NewStyle().Foreground(stone100)
-	selectStyle  = lipgloss.NewStyle().Foreground(amber).Bold(true)
+	cursorStyle  = lipgloss.NewStyle().Foreground(amber).Bold(true)  // cursor position
+	enabledStyle = lipgloss.NewStyle().Foreground(cyan).Bold(true)   // enabled/selected items
 	mutedStyle   = lipgloss.NewStyle().Foreground(stone500)
 	successStyle = lipgloss.NewStyle().Foreground(emerald)
 	errorStyle   = lipgloss.NewStyle().Foreground(rose)
@@ -116,8 +118,9 @@ type Model struct {
 	assetInput  textinput.Model
 	assetMsg    string
 	// HTTP server
-	server   *Server
-	serverIP string
+	server      *Server
+	serverIP    string
+	showHttpLog bool
 }
 
 type buildDone struct{ ok bool; msg, log string }
@@ -286,6 +289,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Close HTTP logs
+		if m.showHttpLog {
+			switch msg.String() {
+			case "q", "esc", "x":
+				m.showHttpLog = false
+			case "c":
+				m.server.ClearLogs()
+			}
+			return m, nil
+		}
 		// Adding asset
 		if m.addingAsset {
 			return m.updateAddAsset(msg)
@@ -426,6 +439,11 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err := m.server.Start(payloadPath, assetPath); err != nil {
 				m.buildMsg = errorStyle.Render(err.Error())
 			}
+		}
+		return m, nil
+	case "x":
+		if m.server.IsRunning() {
+			m.showHttpLog = true
 		}
 		return m, nil
 	}
@@ -616,6 +634,10 @@ func (m Model) View() string {
 	if m.showLog {
 		return m.renderLog()
 	}
+	// HTTP log overlay
+	if m.showHttpLog {
+		return m.renderHttpLog()
+	}
 
 	maxW := min(90, m.w-4)
 	colW := (maxW - 3) / 2
@@ -663,7 +685,7 @@ func (m Model) View() string {
 		help = mutedStyle.Render("enter:confirm  esc:cancel")
 	} else {
 		row1 := "tab:section  j/k:nav  space:select  a:add  e:edit  p:preview"
-		row2 := "o:open  b:build  h:http  l:logs  g:gen  r:refresh  q:quit"
+		row2 := "o:open  b:build  h:http  x:reqs  l:logs  g:gen  q:quit"
 		help = mutedStyle.Render(row1) + "\n" + mutedStyle.Render(row2)
 	}
 
@@ -675,18 +697,22 @@ func (m Model) View() string {
 func (m Model) renderBuild(w int) string {
 	title := titleStyle.Render("Build")
 	if m.section == SecBuild {
-		title = selectStyle.Render("▸ Build")
+		title = cursorStyle.Render("▸ Build")
 	}
 
 	var lines []string
 	for i, t := range m.targets {
 		mark := "○"
-		if t.selected {
-			mark = successStyle.Render("●")
-		}
 		style := labelStyle
+		if t.selected {
+			mark = enabledStyle.Render("●")
+			style = enabledStyle
+		}
 		if m.section == SecBuild && i == m.cursor {
-			style = selectStyle
+			style = cursorStyle
+			if !t.selected {
+				mark = "▸"
+			}
 		}
 		lines = append(lines, style.Render(fmt.Sprintf("%s %s", mark, t.name)))
 	}
@@ -705,7 +731,7 @@ func (m Model) renderBuild(w int) string {
 func (m Model) renderAssets(w int) string {
 	title := titleStyle.Render("Assets")
 	if m.section == SecAssets {
-		title = selectStyle.Render("▸ Assets")
+		title = cursorStyle.Render("▸ Assets")
 	}
 
 	maxVisible := 6
@@ -731,12 +757,13 @@ func (m Model) renderAssets(w int) string {
 			i := m.filteredIdx[vi]
 			a := m.assets[i]
 			prefix := "  "
-			if a == m.selectedAsset {
-				prefix = successStyle.Render("● ")
-			}
 			style := labelStyle
+			if a == m.selectedAsset {
+				prefix = enabledStyle.Render("● ")
+				style = enabledStyle
+			}
 			if m.section == SecAssets && vi == m.cursor {
-				style = selectStyle
+				style = cursorStyle
 				if a != m.selectedAsset {
 					prefix = "▸ "
 				}
@@ -771,29 +798,29 @@ func (m Model) renderAssets(w int) string {
 func (m Model) renderDucky(w int) string {
 	title := titleStyle.Render("Ducky Script")
 	if m.section == SecDucky {
-		title = selectStyle.Render("▸ Ducky Script")
+		title = cursorStyle.Render("▸ Ducky Script")
 	}
 
 	osLine := labelStyle.Render("os:      ") + valueStyle.Render(m.duckyOS)
 	if m.section == SecDucky && m.duckyField == 0 {
-		osLine = selectStyle.Render("os:      ") + valueStyle.Render(m.duckyOS) + mutedStyle.Render(" (space)")
+		osLine = cursorStyle.Render("os:      ") + valueStyle.Render(m.duckyOS) + mutedStyle.Render(" (space)")
 	}
 
 	urlLine := labelStyle.Render("url:     ") + valueStyle.Render(m.urlInput.Value())
 	if m.section == SecDucky && m.duckyField == 1 {
 		if m.editing {
-			urlLine = selectStyle.Render("url:     ") + m.urlInput.View()
+			urlLine = cursorStyle.Render("url:     ") + m.urlInput.View()
 		} else {
-			urlLine = selectStyle.Render("url:     ") + valueStyle.Render(m.urlInput.Value()) + mutedStyle.Render(" (e)")
+			urlLine = cursorStyle.Render("url:     ") + valueStyle.Render(m.urlInput.Value()) + mutedStyle.Render(" (e)")
 		}
 	}
 
 	payloadLine := labelStyle.Render("payload: ") + valueStyle.Render(m.payloadInput.Value())
 	if m.section == SecDucky && m.duckyField == 2 {
 		if m.editing {
-			payloadLine = selectStyle.Render("payload: ") + m.payloadInput.View()
+			payloadLine = cursorStyle.Render("payload: ") + m.payloadInput.View()
 		} else {
-			payloadLine = selectStyle.Render("payload: ") + valueStyle.Render(m.payloadInput.Value()) + mutedStyle.Render(" (e)")
+			payloadLine = cursorStyle.Render("payload: ") + valueStyle.Render(m.payloadInput.Value()) + mutedStyle.Render(" (e)")
 		}
 	}
 
@@ -838,6 +865,45 @@ func (m Model) renderLog() string {
 	box := activeBox.Width(min(m.w-4, 100)).Render(log)
 
 	full := lipgloss.JoinVertical(lipgloss.Center, title, "", box, "", help)
+
+	return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, full)
+}
+
+func (m Model) renderHttpLog() string {
+	title := titleStyle.Render("HTTP Server Log")
+	serverInfo := fmt.Sprintf("http://%s:%d", m.serverIP, m.server.Port())
+	subtitle := mutedStyle.Render(serverInfo)
+	help := mutedStyle.Render("c:clear  esc/x/q:close")
+
+	logs := m.server.Logs()
+	var lines []string
+	if len(logs) == 0 {
+		lines = append(lines, mutedStyle.Render("no requests yet"))
+	} else {
+		maxLines := m.h - 12
+		start := 0
+		if len(logs) > maxLines {
+			start = len(logs) - maxLines
+		}
+		for _, l := range logs[start:] {
+			ts := l.Time.Format("15:04:05")
+			status := successStyle.Render(fmt.Sprintf("%d", l.Status))
+			if l.Status >= 400 {
+				status = errorStyle.Render(fmt.Sprintf("%d", l.Status))
+			}
+			line := fmt.Sprintf("%s %s %s %s %s",
+				mutedStyle.Render(ts),
+				labelStyle.Render(l.Method),
+				valueStyle.Render(l.Path),
+				status,
+				mutedStyle.Render(l.IP))
+			lines = append(lines, line)
+		}
+	}
+
+	box := activeBox.Width(min(m.w-4, 80)).Render(strings.Join(lines, "\n"))
+
+	full := lipgloss.JoinVertical(lipgloss.Center, title, subtitle, "", box, "", help)
 
 	return lipgloss.Place(m.w, m.h, lipgloss.Center, lipgloss.Center, full)
 }
