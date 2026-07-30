@@ -10,8 +10,11 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
-// Embedded asset (set via SCREENJACK_ASSET env at build time, or use default)
+// Embedded asset - set SCREENJACK_ASSET at build time, or uses empty default
+#[cfg(feature = "embedded")]
 const EMBEDDED_ASSET: &[u8] = include_bytes!(env!("SCREENJACK_ASSET"));
+#[cfg(not(feature = "embedded"))]
+const EMBEDDED_ASSET: &[u8] = &[];
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -187,19 +190,20 @@ mod linux {
         conn.create_gc(gc, win, &CreateGCAux::new()).unwrap();
         conn.flush().unwrap();
 
-        // Load media
-        let frames: Option<Vec<AnimFrame>> = image_path.and_then(|path| {
-            if is_gif(path) {
-                load_gif_frames(path)
-            } else {
-                // Static image as single frame
-                image::open(path).ok().map(|img| {
-                    let img = img.resize_exact(width as u32, height as u32, image::imageops::FilterType::Triangle);
-                    let rgba = img.to_rgba8().into_raw();
-                    vec![AnimFrame { rgba, width: width as u32, height: height as u32, delay_ms: 0 }]
-                })
-            }
-        });
+        // Load media (from path or embedded fallback)
+        let frames: Option<Vec<AnimFrame>> = image_path
+            .and_then(|path| {
+                if is_gif(path) {
+                    load_gif_frames(path)
+                } else {
+                    image::open(path).ok().map(|img| {
+                        let img = img.resize_exact(width as u32, height as u32, image::imageops::FilterType::Triangle);
+                        let rgba = img.to_rgba8().into_raw();
+                        vec![AnimFrame { rgba, width: width as u32, height: height as u32, delay_ms: 0 }]
+                    })
+                }
+            })
+            .or_else(load_embedded_frames);
 
         let is_animated = frames.as_ref().map(|f| f.len() > 1).unwrap_or(false);
         let mut frame_idx = 0;
@@ -317,60 +321,62 @@ mod win {
             SCREEN_W.store(sw as usize, Ordering::Relaxed);
             SCREEN_H.store(sh as usize, Ordering::Relaxed);
 
-            // Load frames
+            // Load frames (from path or embedded fallback)
             let mut frame_delays: Vec<u64> = Vec::new();
-            if let Some(path) = image_path {
-                let frames = if is_gif(path) {
-                    load_gif_frames(path)
-                } else {
-                    image::open(path).ok().map(|img| {
-                        let (w, h) = img.dimensions();
-                        let rgba = img.to_rgba8().into_raw();
-                        vec![AnimFrame { rgba, width: w, height: h, delay_ms: 0 }]
-                    })
-                };
-
-                if let Some(frames) = frames {
-                    let hdc = GetDC(None);
-                    let mut bitmaps = FRAME_BITMAPS.lock().unwrap();
-
-                    for frame in &frames {
-                        frame_delays.push(frame.delay_ms);
-
-                        // Scale to screen
-                        let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone()).unwrap();
-                        let img = image::imageops::resize(&img, sw as u32, sh as u32, image::imageops::FilterType::Nearest);
-                        let (w, h) = img.dimensions();
-
-                        let bmi = BITMAPINFO {
-                            bmiHeader: BITMAPINFOHEADER {
-                                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                                biWidth: w as i32,
-                                biHeight: -(h as i32),
-                                biPlanes: 1,
-                                biBitCount: 32,
-                                biCompression: BI_RGB.0,
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        };
-
-                        let mut bits: *mut std::ffi::c_void = null_mut();
-                        let hbm = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
-
-                        let dest = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
-                        for (i, pixel) in img.pixels().enumerate() {
-                            let off = i * 4;
-                            dest[off] = pixel[2];
-                            dest[off + 1] = pixel[1];
-                            dest[off + 2] = pixel[0];
-                            dest[off + 3] = pixel[3];
-                        }
-
-                        bitmaps.push((hbm.0 as usize, w as i32, h as i32));
+            let frames = image_path
+                .and_then(|path| {
+                    if is_gif(path) {
+                        load_gif_frames(path)
+                    } else {
+                        image::open(path).ok().map(|img| {
+                            let (w, h) = img.dimensions();
+                            let rgba = img.to_rgba8().into_raw();
+                            vec![AnimFrame { rgba, width: w, height: h, delay_ms: 0 }]
+                        })
                     }
-                    ReleaseDC(None, hdc);
+                })
+                .or_else(load_embedded_frames);
+
+            if let Some(frames) = frames {
+                let hdc = GetDC(None);
+                let mut bitmaps = FRAME_BITMAPS.lock().unwrap();
+
+                for frame in &frames {
+                    frame_delays.push(frame.delay_ms);
+
+                    // Scale to screen
+                    let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone()).unwrap();
+                    let img = image::imageops::resize(&img, sw as u32, sh as u32, image::imageops::FilterType::Nearest);
+                    let (w, h) = img.dimensions();
+
+                    let bmi = BITMAPINFO {
+                        bmiHeader: BITMAPINFOHEADER {
+                            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                            biWidth: w as i32,
+                            biHeight: -(h as i32),
+                            biPlanes: 1,
+                            biBitCount: 32,
+                            biCompression: BI_RGB.0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+
+                    let mut bits: *mut std::ffi::c_void = null_mut();
+                    let hbm = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
+
+                    let dest = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
+                    for (i, pixel) in img.pixels().enumerate() {
+                        let off = i * 4;
+                        dest[off] = pixel[2];
+                        dest[off + 1] = pixel[1];
+                        dest[off + 2] = pixel[0];
+                        dest[off + 3] = pixel[3];
+                    }
+
+                    bitmaps.push((hbm.0 as usize, w as i32, h as i32));
                 }
+                ReleaseDC(None, hdc);
             }
 
             let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_hook), instance, 0).unwrap();

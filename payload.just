@@ -16,9 +16,21 @@ linux:
     mkdir -p ../dist
     cp target/release/screenjack ../dist/screenjack-linux
 
+# Build linux with embedded asset
+linux-embedded ASSET:
+    SCREENJACK_ASSET="{{ASSET}}" cargo build --release --features embedded
+    mkdir -p ../dist
+    cp target/release/screenjack ../dist/screenjack-linux
+
 # Cross-compile for windows + copy to dist
 windows:
     cargo build --release --target x86_64-pc-windows-gnu
+    mkdir -p ../dist
+    cp target/x86_64-pc-windows-gnu/release/screenjack.exe ../dist/screenjack.exe
+
+# Windows with embedded asset
+windows-embedded ASSET:
+    SCREENJACK_ASSET="{{ASSET}}" cargo build --release --target x86_64-pc-windows-gnu --features embedded
     mkdir -p ../dist
     cp target/x86_64-pc-windows-gnu/release/screenjack.exe ../dist/screenjack.exe
 

