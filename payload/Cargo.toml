@@ -1,0 +1,34 @@
+[package]
+name = "screenjack"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+embedded = []  # Build with SCREENJACK_ASSET env var for embedded image
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
+gif = "0.13"
+gif-dispose = "5.0"
+
+# Linux X11
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "image"] }
+
+# Windows
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }
+
+[profile.release]
+opt-level = "z"     # size optimization
+lto = true          # link-time optimization
+codegen-units = 1   # single codegen unit for better optimization
+panic = "abort"     # smaller binary, no unwinding
+strip = true        # strip symbols
