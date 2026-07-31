@@ -1352,9 +1352,41 @@ func (m TUIModel) viewSidebar() string {
 
 	// Build status
 	buildTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build")
-	buildStatus := styleStatus.Render("Ready")
-	if m.buildMsg != "" {
-		buildStatus = m.buildMsg
+	var buildStatus string
+	switch m.buildState {
+	case BuildRunning:
+		buildStatus = styleWarn.Render("* Building...")
+		if len(m.buildProgress) > 0 {
+			var parts []string
+			for _, p := range m.buildProgress {
+				icon := ">"
+				if p.Done {
+					if p.Error != "" {
+						icon = "X"
+					} else {
+						icon = "+"
+					}
+				}
+				// Use first 3 chars of target
+				tgt := p.Target
+				if len(tgt) > 3 {
+					tgt = tgt[:3]
+				}
+				parts = append(parts, icon+tgt)
+			}
+			buildStatus += "\n  " + strings.Join(parts, " ")
+		}
+	case BuildCancelling:
+		buildStatus = styleWarn.Render("o Cancelling...")
+	default:
+		if m.buildMsg != "" {
+			buildStatus = m.buildMsg
+		} else {
+			buildStatus = styleStatus.Render("Ready")
+		}
+	}
+	if m.queuedBuild != nil {
+		buildStatus += "\n" + styleStatus.Render("  Queued [1]")
 	}
 
 	// Asset status
