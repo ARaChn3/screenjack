@@ -1407,6 +1407,86 @@ func (m TUIModel) viewTabs() string {
 	)
 }
 
+func progressBar(percent float64, width int) string {
+	filled := int(percent * float64(width))
+	if filled > width {
+		filled = width
+	}
+	empty := width - filled
+	return strings.Repeat("#", filled) + strings.Repeat("-", empty)
+}
+
+func (m TUIModel) viewBuildProgress() string {
+	if m.buildState == BuildIdle && len(m.buildProgress) == 0 {
+		return ""
+	}
+
+	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build Progress")
+
+	var rows []string
+	for _, p := range m.buildProgress {
+		var percent float64
+		switch p.Phase {
+		case "compiling":
+			percent = 0.3
+		case "packaging":
+			percent = 0.6
+		case "encrypting":
+			percent = 0.8
+		case "done":
+			percent = 1.0
+		default:
+			percent = 0.1
+		}
+
+		bar := progressBar(percent, 20)
+		status := p.Phase
+		style := lipgloss.NewStyle().Foreground(colorStone50)
+
+		if p.Done {
+			if p.Error != "" {
+				status = "X " + p.Error
+				style = style.Foreground(colorRose)
+			} else {
+				status = "OK"
+				style = style.Foreground(colorEmerald)
+			}
+		}
+
+		row := fmt.Sprintf("  %-10s [%s]  %s", p.Target, bar, style.Render(status))
+		rows = append(rows, row)
+	}
+
+	// Log section
+	logIcon := ">"
+	logHint := "(l to expand)"
+	if m.logExpanded {
+		logIcon = "v"
+		logHint = "(l to collapse)"
+	}
+	logHeader := fmt.Sprintf("  %s Log %s", logIcon, styleStatus.Render(logHint))
+	rows = append(rows, "", logHeader)
+
+	// Show log lines
+	logLines := m.buildLogs
+	if !m.logExpanded && len(logLines) > 2 {
+		logLines = logLines[len(logLines)-2:]
+	} else if m.logExpanded && len(logLines) > 10 {
+		logLines = logLines[len(logLines)-10:]
+	}
+	for _, line := range logLines {
+		if len(line) > 60 {
+			line = line[:57] + "..."
+		}
+		rows = append(rows, "    "+styleStatus.Render(line))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return styleBox.Width(mainBoxW).Render(
+		lipgloss.JoinVertical(lipgloss.Left, title, "", content),
+	)
+}
+
 func (m TUIModel) viewBuildTab() string {
 	// Targets box
 	targetTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Targets")
@@ -1437,6 +1517,11 @@ func (m TUIModel) viewBuildTab() string {
 	)
 	assetBox := styleBox.Width(mainBoxW).Render(assetRow)
 
+	// Progress panel if building
+	progressPanel := m.viewBuildProgress()
+	if progressPanel != "" {
+		return lipgloss.JoinVertical(lipgloss.Center, targetsBox, "", assetBox, "", progressPanel)
+	}
 	return lipgloss.JoinVertical(lipgloss.Center, targetsBox, "", assetBox)
 }
 
