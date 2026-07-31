@@ -313,7 +313,7 @@ func (d AssetDelegate) Render(w io.Writer, m list.Model, index int, listItem lis
 		style = style.Foreground(colorAmber).Bold(true)
 	}
 	if item.Selected {
-		cursor = "✓ "
+		cursor = "+ "
 		style = style.Foreground(colorCyan)
 		if index == m.Index() {
 			style = style.Background(colorStone800)
@@ -532,20 +532,66 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// ponytail: legacy handler, will be replaced by new build system
 		m.buildLogs = strings.Split(msg.log, "\n")
 		if msg.ok {
-			m.buildMsg = styleSuccess.Render("✓ " + msg.msg)
+			m.buildMsg = styleSuccess.Render("[OK] " + msg.msg)
 			m.status = styleSuccess.Render("Build complete")
 		} else {
-			m.buildMsg = styleError.Render("✗ " + msg.msg)
+			m.buildMsg = styleError.Render("[X] " + msg.msg)
 			m.status = styleError.Render("Build failed")
 		}
 		return m, nil
 
+	case progressMsg:
+		// Update progress for this target
+		found := false
+		for i, p := range m.buildProgress {
+			if p.Target == TargetProgress(msg).Target {
+				m.buildProgress[i] = TargetProgress(msg)
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.buildProgress = append(m.buildProgress, TargetProgress(msg))
+		}
+		return m, nil
+
+	case logMsg:
+		m.buildLogs = append(m.buildLogs, string(msg))
+		if len(m.buildLogs) > 100 {
+			m.buildLogs = m.buildLogs[len(m.buildLogs)-100:]
+		}
+		return m, nil
+
+	case buildCompleteMsg:
+		result := msg.toResult()
+		m.buildState = BuildIdle
+		m.buildCancel = nil
+		if result.Success {
+			m.status = styleSuccess.Render("[OK] " + result.Summary)
+		} else if result.Partial {
+			m.status = styleWarn.Render("[!] " + result.Summary)
+		} else if result.Cancelled {
+			m.status = styleStatus.Render("Build cancelled")
+		} else {
+			m.status = styleError.Render("[X] " + result.Summary)
+		}
+		// Check for queued build
+		if m.queuedBuild != nil {
+			job := m.queuedBuild
+			m.queuedBuild = nil
+			return m, m.startBuildCmd(job)
+		}
+		return m, nil
+
+	case startBuildMsg:
+		return m.startBuild(msg.job)
+
 	case packageDoneMsg:
 		if msg.ok {
-			m.pkgMsg = styleSuccess.Render("✓ " + msg.msg)
+			m.pkgMsg = styleSuccess.Render("[OK] " + msg.msg)
 			m.status = styleSuccess.Render("Package complete")
 		} else {
-			m.pkgMsg = styleError.Render("✗ " + msg.msg)
+			m.pkgMsg = styleError.Render("[X] " + msg.msg)
 			m.status = styleError.Render("Package failed")
 		}
 		return m, nil
@@ -592,10 +638,19 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.toggleServer()
 
 		case key.Matches(msg, m.keys.Logs):
-			if m.server.IsRunning() {
+			// Context-sensitive: toggle build log on Build tab, server logs otherwise
+			if m.activeTab == TabBuild || m.buildState == BuildRunning {
+				m.logExpanded = !m.logExpanded
+			} else if m.server.IsRunning() {
 				m.modal = ModalLogs
 			}
 			return m, nil
+
+		case key.Matches(msg, m.keys.Build):
+			return m.handleBuildKey()
+
+		case key.Matches(msg, m.keys.Cancel):
+			return m.handleCancelKey()
 		}
 
 		// Tab-specific updates
@@ -1112,6 +1167,113 @@ func (m *TUIModel) genDucky() {
 	m.duckyLastGen = time.Now().Format("15:04:05")
 }
 
+// handleBuildKey processes the "b" key for unified build
+func (m TUIModel) handleBuildKey() (tea.Model, tea.Cmd) {
+	// Gather selected targets
+	var targets []string
+	for _, item := range m.targetList.Items() {
+		if t, ok := item.(TargetItem); ok && t.Selected {
+			targets = append(targets, t.Target)
+		}
+	}
+
+	// Validate
+	result := ValidateBuild(targets, m.selectedAsset, m.embedAsset, &m.pkgConfig)
+	if !result.Valid {
+		m.status = styleError.Render(result.Error)
+		return m, nil
+	}
+
+	// Create job
+	job := &BuildJob{
+		Targets:    targets,
+		Asset:      "../assets/" + m.selectedAsset,
+		EmbedAsset: m.embedAsset,
+		PkgConfig:  m.pkgConfig,
+		StartedAt:  time.Now(),
+	}
+
+	// Handle platform mismatch warnings
+	if result.MissingWindows {
+		m.status = styleWarn.Render("Skipping Windows-only options (no Windows target)")
+	}
+	if result.MissingLinux {
+		m.status = styleWarn.Render("Skipping Linux-only options (no Linux target)")
+	}
+
+	// Queue if busy
+	if m.buildState == BuildRunning {
+		m.queuedBuild = job
+		m.status = styleStatus.Render("Queued [1]")
+		return m, nil
+	}
+
+	return m.startBuild(job)
+}
+
+// startBuild begins a new build job
+func (m TUIModel) startBuild(job *BuildJob) (tea.Model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.buildCancel = cancel
+	m.buildState = BuildRunning
+	m.currentBuild = job
+	m.buildProgress = []TargetProgress{}
+	m.buildLogs = []string{}
+
+	progressCh := make(chan TargetProgress, 10)
+	logCh := make(chan string, 100)
+	doneCh := StartBuild(ctx, job, progressCh, logCh)
+
+	m.status = styleWarn.Render("Building...")
+
+	return m, m.listenForBuildUpdates(progressCh, logCh, doneCh)
+}
+
+// startBuildCmd wraps startBuild as tea.Cmd for queue handling
+func (m TUIModel) startBuildCmd(job *BuildJob) tea.Cmd {
+	return func() tea.Msg {
+		// ponytail: return a marker message to trigger startBuild in next Update
+		return startBuildMsg{job: job}
+	}
+}
+
+type startBuildMsg struct {
+	job *BuildJob
+}
+
+// listenForBuildUpdates returns a cmd that waits for build messages
+func (m TUIModel) listenForBuildUpdates(progressCh <-chan TargetProgress, logCh <-chan string, doneCh <-chan buildCompleteMsg) tea.Cmd {
+	return func() tea.Msg {
+		select {
+		case p, ok := <-progressCh:
+			if ok {
+				return progressMsg(p)
+			}
+		case l, ok := <-logCh:
+			if ok {
+				return logMsg(l)
+			}
+		case d := <-doneCh:
+			return d
+		}
+		return nil
+	}
+}
+
+// handleCancelKey cancels the current build
+func (m TUIModel) handleCancelKey() (tea.Model, tea.Cmd) {
+	if m.buildState != BuildRunning {
+		return m, nil
+	}
+	if m.buildCancel != nil {
+		m.buildCancel()
+	}
+	m.buildState = BuildCancelling
+	m.queuedBuild = nil
+	m.status = styleStatus.Render("Cancelling...")
+	return m, nil
+}
+
 func (m TUIModel) View() string {
 	if m.width < 80 || m.height < 24 {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
@@ -1206,7 +1368,7 @@ func (m TUIModel) viewSidebar() string {
 	duckyTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Ducky")
 	duckyStatus := styleStatus.Render("Not generated")
 	if m.duckyLastGen != "" {
-		duckyStatus = styleSuccess.Render("✓ " + m.duckyOS + " @ " + m.duckyLastGen)
+		duckyStatus = styleSuccess.Render("[OK] " + m.duckyOS + " @ " + m.duckyLastGen)
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left,
@@ -1317,7 +1479,7 @@ func (m TUIModel) viewDuckyTab() string {
 	}
 	genBtn := btnStyle.Render("[ Generate Script ]")
 	if m.duckyLastGen != "" {
-		genBtn += "  " + styleSuccess.Render("✓ "+m.duckyLastGen)
+		genBtn += "  " + styleSuccess.Render("[OK] "+m.duckyLastGen)
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)

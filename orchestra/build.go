@@ -203,7 +203,7 @@ type BuildResult struct {
 	Success   bool
 	Partial   bool
 	Cancelled bool
-	Summary   string // "Linux ✓, Windows ✗"
+	Summary   string // "Linux OK, Windows X"
 }
 
 func (m buildCompleteMsg) toResult() BuildResult {
@@ -217,10 +217,10 @@ func (m buildCompleteMsg) toResult() BuildResult {
 
 	for _, p := range m.Results {
 		if p.Error != "" {
-			parts = append(parts, p.Target+" ✗")
+			parts = append(parts, p.Target+" X")
 			allOK = false
 		} else {
-			parts = append(parts, p.Target+" ✓")
+			parts = append(parts, p.Target+" OK")
 			anyOK = true
 		}
 	}

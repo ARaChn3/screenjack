@@ -172,7 +172,7 @@ func TestBuildCompleteToResult(t *testing.T) {
 				{Target: "windows", Done: true},
 			}},
 			wantOK:  true,
-			wantSum: "linux ✓, windows ✓",
+			wantSum: "linux OK, windows OK",
 		},
 		{
 			name: "partial",
@@ -181,7 +181,7 @@ func TestBuildCompleteToResult(t *testing.T) {
 				{Target: "windows", Done: true, Error: "failed"},
 			}},
 			wantOK:  false,
-			wantSum: "linux ✓, windows ✗",
+			wantSum: "linux OK, windows X",
 		},
 	}
 	for _, tt := range tests {
