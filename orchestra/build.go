@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Build state machine
 type BuildState int
@@ -181,4 +184,46 @@ func ValidateBuild(targets []string, asset string, embedMode bool, cfg *PackageC
 	}
 
 	return result
+}
+
+// Tea messages for build updates
+type progressMsg TargetProgress
+type logMsg string
+type buildCompleteMsg struct {
+	Results   []TargetProgress
+	Cancelled bool
+}
+
+// BuildResult summarizes a completed build
+type BuildResult struct {
+	Success   bool
+	Partial   bool
+	Cancelled bool
+	Summary   string // "Linux ✓, Windows ✗"
+}
+
+func (m buildCompleteMsg) toResult() BuildResult {
+	if m.Cancelled {
+		return BuildResult{Cancelled: true, Summary: "Cancelled"}
+	}
+
+	var parts []string
+	allOK := true
+	anyOK := false
+
+	for _, p := range m.Results {
+		if p.Error != "" {
+			parts = append(parts, p.Target+" ✗")
+			allOK = false
+		} else {
+			parts = append(parts, p.Target+" ✓")
+			anyOK = true
+		}
+	}
+
+	return BuildResult{
+		Success: allOK,
+		Partial: !allOK && anyOK,
+		Summary: strings.Join(parts, ", "),
+	}
 }

@@ -151,3 +151,48 @@ func TestOptionsForTarget(t *testing.T) {
 		t.Errorf("Linux Persist = %d, want 2 (XDG)", linOpts.Persist)
 	}
 }
+
+func TestBuildCompleteToResult(t *testing.T) {
+	tests := []struct {
+		name    string
+		msg     buildCompleteMsg
+		wantOK  bool
+		wantSum string
+	}{
+		{
+			name:    "cancelled",
+			msg:     buildCompleteMsg{Cancelled: true},
+			wantOK:  false,
+			wantSum: "Cancelled",
+		},
+		{
+			name: "all success",
+			msg: buildCompleteMsg{Results: []TargetProgress{
+				{Target: "linux", Done: true},
+				{Target: "windows", Done: true},
+			}},
+			wantOK:  true,
+			wantSum: "linux ✓, windows ✓",
+		},
+		{
+			name: "partial",
+			msg: buildCompleteMsg{Results: []TargetProgress{
+				{Target: "linux", Done: true},
+				{Target: "windows", Done: true, Error: "failed"},
+			}},
+			wantOK:  false,
+			wantSum: "linux ✓, windows ✗",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := tt.msg.toResult()
+			if r.Success != tt.wantOK {
+				t.Errorf("Success = %v, want %v", r.Success, tt.wantOK)
+			}
+			if r.Summary != tt.wantSum {
+				t.Errorf("Summary = %q, want %q", r.Summary, tt.wantSum)
+			}
+		})
+	}
+}
