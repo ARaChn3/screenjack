@@ -318,7 +318,8 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		progress.Phase = "packaging"
 		progressCh <- progress
 
-		payloadPath := "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+		// ponytail: path relative to screenjack/ since pkgCmd.Dir = ".."
+		payloadPath := "payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
 
 		// Apply execution method
 		var recipe string
@@ -346,9 +347,10 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		progressCh <- progress
 		logCh <- fmt.Sprintf("[%s] Encrypting payload...", target)
 
-		payloadPath := "../payload/target/release/screenjack"
+		// ponytail: path relative to screenjack/ since encCmd.Dir = ".."
+		payloadPath := "payload/target/release/screenjack"
 		if target == "windows" || target == "x86_64-pc-windows-gnu" {
-			payloadPath = "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+			payloadPath = "payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
 		}
 		encCmd := exec.CommandContext(ctx, "just", "-f", "package.just", "encrypt", payloadPath)
 		encCmd.Dir = ".."
