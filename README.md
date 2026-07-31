@@ -12,6 +12,10 @@ sudo pacman -S rust go just
 # Cross-compile for Windows
 sudo pacman -S mingw-w64-gcc
 rustup target add x86_64-pc-windows-gnu
+
+# Static musl builds (optional - or use docker-alpine)
+sudo pacman -S musl
+rustup target add x86_64-unknown-linux-musl
 ```
 
 **Target machine:**
@@ -49,6 +53,10 @@ just build-linux     # Linux payload -> dist/screenjack-linux
 just build-windows   # Windows payload -> dist/screenjack.exe
 just build-all       # Both targets
 just tui             # Run orchestra TUI
+
+# Docker builds (no local toolchain needed)
+just -f payload.just docker-alpine   # Static musl binary
+just -f payload.just docker-debian   # glibc binary
 ```
 
 ## Payload Usage
