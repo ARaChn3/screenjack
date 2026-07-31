@@ -76,48 +76,50 @@ var persistMethods = []string{"None", "Registry Run [Win]", "XDG Autostart [Lin]
 
 // KeyMap defines all keybindings
 type KeyMap struct {
-	Quit    key.Binding
-	Help    key.Binding
-	Tab     key.Binding
-	Tab1    key.Binding
-	Tab2    key.Binding
-	Tab3    key.Binding
-	Tab4    key.Binding
-	Up      key.Binding
-	Down    key.Binding
-	Left    key.Binding
-	Right   key.Binding
-	Toggle  key.Binding
-	Confirm key.Binding
-	Server  key.Binding
-	Assets  key.Binding
-	Logs    key.Binding
-	Back    key.Binding
-	Build   key.Binding
-	Cancel  key.Binding
+	Quit     key.Binding
+	Help     key.Binding
+	Tab      key.Binding
+	ShiftTab key.Binding
+	Tab1     key.Binding
+	Tab2     key.Binding
+	Tab3     key.Binding
+	Tab4     key.Binding
+	Up       key.Binding
+	Down     key.Binding
+	Left     key.Binding
+	Right    key.Binding
+	Toggle   key.Binding
+	Confirm  key.Binding
+	Server   key.Binding
+	Assets   key.Binding
+	Logs     key.Binding
+	Back     key.Binding
+	Build    key.Binding
+	Cancel   key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
 	return KeyMap{
-		Quit:    key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-		Help:    key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-		Tab:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
-		Tab1:    key.NewBinding(key.WithKeys("1"), key.WithHelp("1", "Build")),
-		Tab2:    key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "Ducky")),
-		Tab3:    key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "Server")),
-		Tab4:    key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "Package")),
-		Up:      key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k/↑", "up")),
-		Down:    key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/↓", "down")),
-		Left:    key.NewBinding(key.WithKeys("left"), key.WithHelp("←", "left")),
-		Right:   key.NewBinding(key.WithKeys("right"), key.WithHelp("→", "right")),
-		Toggle:  key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
-		Confirm: key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
-		Server:  key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "server")),
-		Assets:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assets")),
-		Logs:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
-		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-		Build:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "build")),
-		Cancel:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
+		Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+		Tab:      key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
+		ShiftTab: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("S-tab", "prev tab")),
+		Tab1:     key.NewBinding(key.WithKeys("1"), key.WithHelp("1", "Build")),
+		Tab2:     key.NewBinding(key.WithKeys("2"), key.WithHelp("2", "Ducky")),
+		Tab3:     key.NewBinding(key.WithKeys("3"), key.WithHelp("3", "Server")),
+		Tab4:     key.NewBinding(key.WithKeys("4"), key.WithHelp("4", "Package")),
+		Up:       key.NewBinding(key.WithKeys("k", "up"), key.WithHelp("k/up", "up")),
+		Down:     key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/down", "down")),
+		Left:     key.NewBinding(key.WithKeys("left"), key.WithHelp("left", "left")),
+		Right:    key.NewBinding(key.WithKeys("right"), key.WithHelp("right", "right")),
+		Toggle:   key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
+		Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
+		Server:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "server")),
+		Assets:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assets")),
+		Logs:     key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
+		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Build:    key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "build")),
+		Cancel:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
 	}
 }
 
@@ -427,11 +429,13 @@ func NewTUIModel() TUIModel {
 	urlInput.Placeholder = "http://localhost:8000"
 	urlInput.SetValue("http://localhost:8000")
 	urlInput.Width = 30
+	urlInput.Prompt = ""
 
 	payloadInput := textinput.New()
 	payloadInput.Placeholder = "screenjack"
 	payloadInput.SetValue("screenjack")
 	payloadInput.Width = 20
+	payloadInput.Prompt = ""
 
 	// Path input for adding assets
 	pathInput := textinput.New()
@@ -509,6 +513,25 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.targetList.SetSize(mainBoxW-4, 6)
 		m.assetList.SetSize(mainBoxW-4, 12)
 		m.filePicker.Height = 15
+		return m, nil
+
+	case tea.MouseMsg:
+		// Handle tab clicks - tabs are at the top after the logo
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			// Tab bar is roughly at y=7-8, tabs start around x=30
+			// Each tab is ~10 chars wide with padding
+			if msg.Y >= 6 && msg.Y <= 8 {
+				tabWidth := 10
+				tabStart := (m.width - 4*tabWidth) / 2 // centered tabs
+				if msg.X >= tabStart {
+					tabIdx := (msg.X - tabStart) / tabWidth
+					if tabIdx >= 0 && tabIdx < 4 {
+						m.activeTab = Tab(tabIdx)
+						return m, nil
+					}
+				}
+			}
+		}
 		return m, nil
 
 	case assetsScannedMsg:
@@ -616,9 +639,12 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.help.ShowAll = !m.help.ShowAll
 			return m, nil
 
-		// Tab navigation: 1-4 or tab
+		// Tab navigation: 1-4 or tab/shift+tab
 		case key.Matches(msg, m.keys.Tab):
 			m.activeTab = Tab((int(m.activeTab) + 1) % 4)
+			return m, nil
+		case key.Matches(msg, m.keys.ShiftTab):
+			m.activeTab = Tab((int(m.activeTab) + 3) % 4) // +3 = -1 mod 4
 			return m, nil
 		case key.Matches(msg, m.keys.Tab1):
 			m.activeTab = TabBuild
