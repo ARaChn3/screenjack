@@ -93,6 +93,8 @@ type KeyMap struct {
 	Assets  key.Binding
 	Logs    key.Binding
 	Back    key.Binding
+	Build   key.Binding
+	Cancel  key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -114,19 +116,21 @@ func DefaultKeyMap() KeyMap {
 		Assets:  key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assets")),
 		Logs:    key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "logs")),
 		Back:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		Build:   key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "build")),
+		Cancel:  key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
 	}
 }
 
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Toggle, k.Confirm, k.Server, k.Quit}
+	return []key.Binding{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Build, k.Cancel, k.Server, k.Quit}
 }
 
 func (k KeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Tab},
 		{k.Up, k.Down, k.Left, k.Right},
-		{k.Toggle, k.Confirm, k.Server, k.Assets},
-		{k.Logs, k.Back, k.Help, k.Quit},
+		{k.Toggle, k.Confirm, k.Build, k.Cancel},
+		{k.Server, k.Assets, k.Logs, k.Quit},
 	}
 }
 
