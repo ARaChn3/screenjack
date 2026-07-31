@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -31,11 +32,12 @@ const (
 
 // BuildJob represents a single build request
 type BuildJob struct {
-	Targets    []string      // ["linux", "windows"]
-	Asset      string        // selected asset path
-	EmbedAsset bool          // true = embed, false = HTTP fetch
-	PkgConfig  PackageConfig // snapshot from Package tab
-	StartedAt  time.Time
+	Targets     []string      // ["linux", "windows", "docker-alpine", etc.]
+	Asset       string        // selected asset path
+	EmbedAsset  bool          // true = embed, false = HTTP fetch
+	DockerBuild bool          // true = use Docker for non-docker targets
+	PkgConfig   PackageConfig // snapshot from Package tab
+	StartedAt   time.Time
 }
 
 // TargetProgress tracks per-target build status
@@ -269,10 +271,20 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 	progress := TargetProgress{Target: target, Phase: "compiling"}
 	progressCh <- progress
 
-	// Determine cargo target
+	// Check if this is a Docker target or if Docker mode is enabled
+	isDockerTarget := strings.HasPrefix(target, "docker-")
+	useDocker := isDockerTarget || job.DockerBuild
+
+	if useDocker {
+		return buildTargetDocker(ctx, target, job, progressCh, logCh, progress)
+	}
+
+	// Native cargo build
 	cargoTarget := ""
 	if target == "windows" || target == "x86_64-pc-windows-gnu" {
 		cargoTarget = "x86_64-pc-windows-gnu"
+	} else if target == "x86_64-unknown-linux-musl" {
+		cargoTarget = "x86_64-unknown-linux-musl"
 	}
 
 	// Build base payload
@@ -289,9 +301,10 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 	cmd := exec.CommandContext(ctx, "cargo", args...)
 	cmd.Dir = "../payload"
 
-	// Set env for embedded asset
+	// Set env for embedded asset - must be absolute path for include_bytes!
 	if job.EmbedAsset && job.Asset != "" {
-		cmd.Env = append(cmd.Environ(), "SCREENJACK_ASSET="+job.Asset)
+		absAsset, _ := filepath.Abs(job.Asset)
+		cmd.Env = append(cmd.Environ(), "SCREENJACK_ASSET="+absAsset)
 	}
 
 	output, err := cmd.CombinedOutput()
@@ -359,6 +372,92 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		}
 	}
 
+	progress.Phase = "done"
+	progress.Done = true
+	progressCh <- progress
+	return progress
+}
+
+// buildTargetDocker builds a target using Docker
+func buildTargetDocker(ctx context.Context, target string, job *BuildJob, progressCh chan<- TargetProgress, logCh chan<- string, progress TargetProgress) TargetProgress {
+	// Map target to dockerfile and output name
+	dockerfile := ""
+	outputName := ""
+
+	switch {
+	case target == "docker-alpine" || (job.DockerBuild && strings.Contains(target, "musl")):
+		dockerfile = "docker/Dockerfile.alpine"
+		outputName = "screenjack-alpine"
+	case target == "docker-debian" || (job.DockerBuild && strings.Contains(target, "linux-gnu")):
+		dockerfile = "docker/Dockerfile.debian"
+		outputName = "screenjack-debian"
+	case target == "docker-arch":
+		dockerfile = "docker/Dockerfile.arch"
+		outputName = "screenjack-arch"
+	case strings.Contains(target, "windows"):
+		dockerfile = "docker/Dockerfile.windows"
+		outputName = "screenjack.exe"
+	default:
+		// Default to alpine for unknown linux targets
+		dockerfile = "docker/Dockerfile.alpine"
+		outputName = "screenjack-" + target
+	}
+
+	logCh <- fmt.Sprintf("[%s] docker build -f %s", target, dockerfile)
+
+	// Build the image
+	imageName := "screenjack-" + strings.TrimPrefix(target, "docker-")
+	buildCmd := exec.CommandContext(ctx, "docker", "build", "-f", dockerfile, "-t", imageName, ".")
+	buildCmd.Dir = ".."
+
+	output, err := buildCmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			progress.Phase = "cancelled"
+			progress.Error = "cancelled"
+		} else {
+			progress.Phase = "failed"
+			progress.Error = "docker build failed"
+			logCh <- fmt.Sprintf("[%s] ERROR: %s", target, string(output))
+		}
+		progress.Done = true
+		progressCh <- progress
+		return progress
+	}
+
+	logCh <- fmt.Sprintf("[%s] Docker image built, extracting binary...", target)
+	progress.Phase = "extracting"
+	progressCh <- progress
+
+	// Extract binary from container
+	binaryPath := "/src/target/release/screenjack"
+	if strings.Contains(target, "windows") {
+		binaryPath = "/src/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+	}
+
+	// Create dist dir
+	_ = exec.Command("mkdir", "-p", "../dist").Run()
+
+	// Extract using docker run cat
+	extractCmd := exec.CommandContext(ctx, "sh", "-c",
+		fmt.Sprintf("docker run --rm %s cat %s > ../dist/%s", imageName, binaryPath, outputName))
+	extractCmd.Dir = "."
+
+	if out, err := extractCmd.CombinedOutput(); err != nil {
+		progress.Phase = "failed"
+		progress.Error = "extract failed"
+		logCh <- fmt.Sprintf("[%s] ERROR: %s", target, string(out))
+		progress.Done = true
+		progressCh <- progress
+		return progress
+	}
+
+	// Make executable (for linux)
+	if !strings.Contains(target, "windows") {
+		_ = exec.Command("chmod", "+x", "../dist/"+outputName).Run()
+	}
+
+	logCh <- fmt.Sprintf("[%s] Built: dist/%s", target, outputName)
 	progress.Phase = "done"
 	progress.Done = true
 	progressCh <- progress

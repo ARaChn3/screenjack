@@ -169,12 +169,12 @@ func GetLocalIP() string {
 }
 
 // PayloadExists checks if payload binary exists
-func PayloadExists(os string) (string, bool) {
+func PayloadExists(targetOS string) (string, bool) {
 	var path string
-	if os == "windows" {
-		path = "../dist/screenjack.exe"
+	if targetOS == "windows" {
+		path = "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
 	} else {
-		path = "../dist/screenjack-linux"
+		path = "../payload/target/x86_64-unknown-linux-gnu/release/screenjack"
 	}
 	_, err := os_stat(path)
 	return path, err == nil

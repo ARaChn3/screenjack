@@ -1,0 +1,16 @@
+# Windows cross-compile from Linux
+FROM rust:slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    gcc-mingw-w64-x86-64 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add x86_64-pc-windows-gnu
+
+WORKDIR /src
+COPY payload/ ./
+
+RUN cargo build --release --target x86_64-pc-windows-gnu \
+    && x86_64-w64-mingw32-strip target/x86_64-pc-windows-gnu/release/screenjack.exe
+
+# Output: /src/target/x86_64-pc-windows-gnu/release/screenjack.exe

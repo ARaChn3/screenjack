@@ -1,0 +1,14 @@
+# Debian/glibc build
+FROM rust:slim-bookworm
+
+RUN apt-get update && apt-get install -y \
+    libxcb1-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY payload/ ./
+
+RUN cargo build --release && strip target/release/screenjack
+
+# Output: /src/target/release/screenjack

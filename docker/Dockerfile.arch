@@ -1,0 +1,15 @@
+# Arch Linux build (glibc, matches host)
+FROM archlinux:latest
+
+RUN pacman -Syu --noconfirm \
+    rust \
+    libxcb \
+    pkgconf \
+    && pacman -Scc --noconfirm
+
+WORKDIR /src
+COPY payload/ ./
+
+RUN cargo build --release && strip target/release/screenjack
+
+# Output: /src/target/release/screenjack

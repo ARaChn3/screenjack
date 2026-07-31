@@ -259,6 +259,7 @@ dependencies = [
  "gif 0.13.3",
  "gif-dispose",
  "image",
+ "libc",
  "windows",
  "x11rb",
 ]

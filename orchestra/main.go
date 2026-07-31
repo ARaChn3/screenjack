@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 func main() {
-	p := tea.NewProgram(NewTUIModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(NewTUIModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
