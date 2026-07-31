@@ -1,0 +1,3 @@
+[submodule "vendor/RustRedOps"]
+	path = vendor/RustRedOps
+	url = https://github.com/joaoviictorti/RustRedOps.git
