@@ -142,6 +142,7 @@ const (
 	ModalAssets
 	ModalFilePicker
 	ModalLogs
+	ModalBuildLogs // build output logs with copy support
 	ModalPreview
 	ModalPackage
 	ModalInput // generic text input modal
@@ -641,9 +642,9 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.toggleServer()
 
 		case key.Matches(msg, m.keys.Logs):
-			// Context-sensitive: toggle build log on Build tab, server logs otherwise
-			if m.activeTab == TabBuild || m.buildState == BuildRunning {
-				m.logExpanded = !m.logExpanded
+			// Context-sensitive: build logs modal on Build tab, server logs otherwise
+			if (m.activeTab == TabBuild || m.buildState == BuildRunning) && len(m.buildLogs) > 0 {
+				m.modal = ModalBuildLogs
 			} else if m.server.IsRunning() {
 				m.modal = ModalLogs
 			}
@@ -758,6 +759,21 @@ func (m TUIModel) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case ModalLogs:
 		if key.Matches(msg, m.keys.Back) || msg.String() == "l" {
 			m.modal = ModalNone
+		}
+		return m, nil
+
+	case ModalBuildLogs:
+		switch msg.String() {
+		case "esc", "l":
+			m.modal = ModalNone
+		case "c":
+			// Copy logs to clipboard
+			logText := strings.Join(m.buildLogs, "\n")
+			if err := copyToClipboard(logText); err != nil {
+				m.status = styleError.Render("Copy failed: " + err.Error())
+			} else {
+				m.status = styleSuccess.Render("Logs copied to clipboard")
+			}
 		}
 		return m, nil
 
@@ -1280,6 +1296,23 @@ func (m TUIModel) handleCancelKey() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// copyToClipboard copies text using xclip/xsel/wl-copy
+func copyToClipboard(text string) error {
+	// Try xclip first, then xsel, then wl-copy
+	for _, tool := range [][]string{
+		{"xclip", "-selection", "clipboard"},
+		{"xsel", "--clipboard", "--input"},
+		{"wl-copy"},
+	} {
+		cmd := exec.Command(tool[0], tool[1:]...)
+		cmd.Stdin = strings.NewReader(text)
+		if err := cmd.Run(); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("no clipboard tool available")
+}
+
 func (m TUIModel) View() string {
 	if m.width < 80 || m.height < 24 {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
@@ -1446,12 +1479,18 @@ func (m TUIModel) viewTabs() string {
 }
 
 func progressBar(percent float64, width int) string {
-	filled := int(percent * float64(width))
-	if filled > width {
-		filled = width
+	if percent < 0 {
+		percent = 0
 	}
-	empty := width - filled
-	return strings.Repeat("#", filled) + strings.Repeat("-", empty)
+	if percent > 1 {
+		percent = 1
+	}
+	filled := int(percent*float64(width) + 0.5)
+	// lipgloss styled: amber for filled, dim for empty
+	filledStyle := lipgloss.NewStyle().Foreground(colorAmber)
+	emptyStyle := lipgloss.NewStyle().Foreground(colorStone600)
+	return filledStyle.Render(strings.Repeat("█", filled)) +
+		emptyStyle.Render(strings.Repeat("░", width-filled))
 }
 
 func (m TUIModel) viewBuildProgress() string {
@@ -1495,28 +1534,15 @@ func (m TUIModel) viewBuildProgress() string {
 		rows = append(rows, row)
 	}
 
-	// Log section
-	logIcon := ">"
-	logHint := "(l to expand)"
-	if m.logExpanded {
-		logIcon = "v"
-		logHint = "(l to collapse)"
-	}
-	logHeader := fmt.Sprintf("  %s Log %s", logIcon, styleStatus.Render(logHint))
-	rows = append(rows, "", logHeader)
-
-	// Show log lines
-	logLines := m.buildLogs
-	if !m.logExpanded && len(logLines) > 2 {
-		logLines = logLines[len(logLines)-2:]
-	} else if m.logExpanded && len(logLines) > 10 {
-		logLines = logLines[len(logLines)-10:]
-	}
-	for _, line := range logLines {
-		if len(line) > 60 {
-			line = line[:57] + "..."
+	// Log hint - show last line + "l" to open modal
+	if len(m.buildLogs) > 0 {
+		lastLine := m.buildLogs[len(m.buildLogs)-1]
+		if len(lastLine) > 50 {
+			lastLine = lastLine[:47] + "..."
 		}
-		rows = append(rows, "    "+styleStatus.Render(line))
+		rows = append(rows, "")
+		rows = append(rows, "  "+styleStatus.Render(lastLine))
+		rows = append(rows, "  "+styleStatus.Render("(l to view logs)"))
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -1806,6 +1832,20 @@ func (m TUIModel) viewModal() string {
 			content = strings.Join(lines, "\n")
 		}
 		content += "\n\n[esc] close"
+
+	case ModalBuildLogs:
+		title = "Build Logs"
+		// Show last 20 lines of build logs
+		logLines := m.buildLogs
+		if len(logLines) > 20 {
+			logLines = logLines[len(logLines)-20:]
+		}
+		if len(logLines) == 0 {
+			content = "(no build output)"
+		} else {
+			content = strings.Join(logLines, "\n")
+		}
+		content += "\n\n[c] copy  [esc] close"
 
 	case ModalInput:
 		title = m.inputModalTitle
