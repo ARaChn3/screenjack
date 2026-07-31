@@ -341,14 +341,17 @@ type TUIModel struct {
 	buildMsg   string
 
 	// Build system
-	buildState    BuildState
-	currentBuild  *BuildJob
-	queuedBuild   *BuildJob // max 1 queued, newest wins
-	buildProgress []TargetProgress
-	buildLogs     []string // capped at 100 lines
-	logExpanded   bool
-	embedAsset    bool // true = embed, false = HTTP fetch
-	buildCancel   context.CancelFunc
+	buildState      BuildState
+	currentBuild    *BuildJob
+	queuedBuild     *BuildJob // max 1 queued, newest wins
+	buildProgress   []TargetProgress
+	buildLogs       []string // capped at 100 lines
+	logExpanded     bool
+	embedAsset      bool // true = embed, false = HTTP fetch
+	buildCancel     context.CancelFunc
+	buildProgressCh chan TargetProgress
+	buildLogCh      chan string
+	buildDoneCh     <-chan buildCompleteMsg
 
 	// Assets
 	assetList     list.Model
@@ -553,14 +556,14 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !found {
 			m.buildProgress = append(m.buildProgress, TargetProgress(msg))
 		}
-		return m, nil
+		return m, m.listenForBuildUpdates()
 
 	case logMsg:
 		m.buildLogs = append(m.buildLogs, string(msg))
 		if len(m.buildLogs) > 100 {
 			m.buildLogs = m.buildLogs[len(m.buildLogs)-100:]
 		}
-		return m, nil
+		return m, m.listenForBuildUpdates()
 
 	case buildCompleteMsg:
 		result := msg.toResult()
@@ -1220,13 +1223,13 @@ func (m TUIModel) startBuild(job *BuildJob) (tea.Model, tea.Cmd) {
 	m.buildProgress = []TargetProgress{}
 	m.buildLogs = []string{}
 
-	progressCh := make(chan TargetProgress, 10)
-	logCh := make(chan string, 100)
-	doneCh := StartBuild(ctx, job, progressCh, logCh)
+	m.buildProgressCh = make(chan TargetProgress, 10)
+	m.buildLogCh = make(chan string, 100)
+	m.buildDoneCh = StartBuild(ctx, job, m.buildProgressCh, m.buildLogCh)
 
 	m.status = styleWarn.Render("Building...")
 
-	return m, m.listenForBuildUpdates(progressCh, logCh, doneCh)
+	return m, m.listenForBuildUpdates()
 }
 
 // startBuildCmd wraps startBuild as tea.Cmd for queue handling
@@ -1242,18 +1245,21 @@ type startBuildMsg struct {
 }
 
 // listenForBuildUpdates returns a cmd that waits for build messages
-func (m TUIModel) listenForBuildUpdates(progressCh <-chan TargetProgress, logCh <-chan string, doneCh <-chan buildCompleteMsg) tea.Cmd {
+func (m TUIModel) listenForBuildUpdates() tea.Cmd {
+	if m.buildState != BuildRunning && m.buildState != BuildCancelling {
+		return nil
+	}
 	return func() tea.Msg {
 		select {
-		case p, ok := <-progressCh:
+		case p, ok := <-m.buildProgressCh:
 			if ok {
 				return progressMsg(p)
 			}
-		case l, ok := <-logCh:
+		case l, ok := <-m.buildLogCh:
 			if ok {
 				return logMsg(l)
 			}
-		case d := <-doneCh:
+		case d := <-m.buildDoneCh:
 			return d
 		}
 		return nil
