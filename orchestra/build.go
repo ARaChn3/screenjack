@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -287,8 +289,8 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		cargoTarget = "x86_64-unknown-linux-musl"
 	}
 
-	// Build base payload
-	args := []string{"build", "--release"}
+	// Build base payload with JSON output for progress tracking
+	args := []string{"build", "--release", "--message-format=json"}
 	if cargoTarget != "" {
 		args = append(args, "--target", cargoTarget)
 	}
@@ -296,7 +298,7 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		args = append(args, "--features", "embedded")
 	}
 
-	logCh <- fmt.Sprintf("[%s] cargo %s", target, strings.Join(args, " "))
+	logCh <- fmt.Sprintf("[%s] cargo build --release", target)
 
 	cmd := exec.CommandContext(ctx, "cargo", args...)
 	cmd.Dir = "../payload"
@@ -307,7 +309,54 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		cmd.Env = append(cmd.Environ(), "SCREENJACK_ASSET="+absAsset)
 	}
 
-	output, err := cmd.CombinedOutput()
+	// Stream output and count compiled crates
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		progress.Phase = "failed"
+		progress.Error = err.Error()
+		progress.Done = true
+		progressCh <- progress
+		return progress
+	}
+	cmd.Stderr = cmd.Stdout // merge stderr into stdout
+
+	if err := cmd.Start(); err != nil {
+		progress.Phase = "failed"
+		progress.Error = err.Error()
+		progress.Done = true
+		progressCh <- progress
+		return progress
+	}
+
+	// Parse JSON messages and count artifacts
+	scanner := bufio.NewScanner(stdout)
+	crateCount := 0
+	lastCrate := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Parse JSON to check reason
+		var msg struct {
+			Reason string `json:"reason"`
+			Target struct {
+				Name string `json:"name"`
+			} `json:"target"`
+			Message struct {
+				Message string `json:"message"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &msg) == nil {
+			if msg.Reason == "compiler-artifact" {
+				crateCount++
+				lastCrate = msg.Target.Name
+				progress.Phase = lastCrate
+				progressCh <- progress
+			} else if msg.Reason == "compiler-message" && msg.Message.Message != "" {
+				logCh <- fmt.Sprintf("[%s] %s", target, msg.Message.Message)
+			}
+		}
+	}
+
+	err = cmd.Wait()
 	if err != nil {
 		if ctx.Err() != nil {
 			progress.Phase = "cancelled"
@@ -315,14 +364,13 @@ func buildTarget(ctx context.Context, target string, job *BuildJob, progressCh c
 		} else {
 			progress.Phase = "failed"
 			progress.Error = err.Error()
-			logCh <- fmt.Sprintf("[%s] ERROR: %s", target, string(output))
 		}
 		progress.Done = true
 		progressCh <- progress
 		return progress
 	}
 
-	logCh <- fmt.Sprintf("[%s] Compiled successfully", target)
+	logCh <- fmt.Sprintf("[%s] Compiled %d crates", target, crateCount)
 
 	// Apply packaging steps based on filtered options
 	opts := optionsForTarget(target, &job.PkgConfig)
@@ -407,7 +455,32 @@ func buildTargetDocker(ctx context.Context, target string, job *BuildJob, progre
 
 	// Build the image
 	imageName := "screenjack-" + strings.TrimPrefix(target, "docker-")
-	buildCmd := exec.CommandContext(ctx, "docker", "build", "-f", dockerfile, "-t", imageName, ".")
+	buildArgs := []string{"build", "-f", dockerfile, "-t", imageName}
+
+	// Handle asset embedding
+	embedAsset := job.EmbedAsset && job.Asset != ""
+	if embedAsset {
+		// Stage asset for Docker context
+		absAsset, _ := filepath.Abs(job.Asset)
+		stageCmd := exec.Command("cp", absAsset, "../docker/.embed-asset")
+		stageCmd.Dir = "."
+		if err := stageCmd.Run(); err != nil {
+			logCh <- fmt.Sprintf("[%s] WARNING: failed to stage asset: %v", target, err)
+			embedAsset = false
+		} else {
+			buildArgs = append(buildArgs, "--build-arg", "EMBED=true")
+			defer exec.Command("rm", "-f", "../docker/.embed-asset").Run()
+		}
+	} else {
+		// Ensure no stale asset
+		_ = exec.Command("rm", "-f", "../docker/.embed-asset").Run()
+		// Create empty placeholder for COPY
+		_ = exec.Command("touch", "../docker/.embed-asset").Run()
+		defer exec.Command("rm", "-f", "../docker/.embed-asset").Run()
+	}
+
+	buildArgs = append(buildArgs, ".")
+	buildCmd := exec.CommandContext(ctx, "docker", buildArgs...)
 	buildCmd.Dir = ".."
 
 	output, err := buildCmd.CombinedOutput()

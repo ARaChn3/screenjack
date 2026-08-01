@@ -84,10 +84,20 @@ setup:
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Build via Alpine (musl static - portable, works everywhere)
-docker-alpine:
+# Optional: ASSET=/path/to/image.gif to embed
+docker-alpine ASSET="":
     #!/usr/bin/env bash
     set -euo pipefail
-    docker build -f ../docker/Dockerfile.alpine -t screenjack-alpine ..
+    if [ -n "{{ASSET}}" ]; then
+        cp "{{ASSET}}" ../docker/.embed-asset
+        docker build -f ../docker/Dockerfile.alpine -t screenjack-alpine \
+            --build-arg EMBED=true ..
+    else
+        # Empty marker so COPY doesn't fail
+        : > ../docker/.embed-asset
+        docker build -f ../docker/Dockerfile.alpine -t screenjack-alpine ..
+    fi
+    rm -f ../docker/.embed-asset
     mkdir -p ../dist
     docker run --rm screenjack-alpine cat /src/target/release/screenjack > ../dist/screenjack-alpine
     chmod +x ../dist/screenjack-alpine

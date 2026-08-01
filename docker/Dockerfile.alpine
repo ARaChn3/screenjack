@@ -1,6 +1,8 @@
 # Alpine/musl static build - portable binary works on any Linux
 FROM alpine:latest
 
+ARG EMBED=false
+
 RUN apk add --no-cache \
     rust cargo \
     musl-dev \
@@ -9,7 +11,12 @@ RUN apk add --no-cache \
 
 WORKDIR /src
 COPY payload/ ./
+COPY docker/.embed-asset /tmp/
 
-RUN cargo build --release && strip target/release/screenjack
+RUN if [ "$EMBED" = "true" ]; then \
+        SCREENJACK_ASSET=/tmp/.embed-asset cargo build --release --features embedded; \
+    else \
+        cargo build --release; \
+    fi && strip target/release/screenjack
 
 # Output: /src/target/release/screenjack

@@ -357,13 +357,13 @@ type TUIModel struct {
 	queuedBuild     *BuildJob // max 1 queued, newest wins
 	buildProgress   []TargetProgress
 	buildLogs       []string // capped at 100 lines
+	buildSpinner    spinner.Model
 	logExpanded     bool
 	embedAsset      bool // true = embed, false = HTTP fetch
 	buildCancel     context.CancelFunc
 	buildProgressCh chan TargetProgress
 	buildLogCh      chan string
 	buildDoneCh     <-chan buildCompleteMsg
-	buildSpinner    spinner.Model
 	logViewport     viewport.Model
 
 	// Assets
@@ -474,8 +474,8 @@ func NewTUIModel() TUIModel {
 	inputModal.SetWidth(40)
 	inputModal.Prompt = "> "
 
-	// Log viewport for scrollable build logs
-	logVP := viewport.New(viewport.WithWidth(70), viewport.WithHeight(15))
+	// Log viewport for scrollable build logs - larger for verbose output
+	logVP := viewport.New(viewport.WithWidth(100), viewport.WithHeight(20))
 	logVP.Style = lipgloss.NewStyle().Foreground(colorStone50)
 
 	// Build spinner
@@ -501,8 +501,8 @@ func NewTUIModel() TUIModel {
 		buildState:    BuildIdle,
 		buildProgress: []TargetProgress{},
 		buildLogs:     []string{},
-		embedAsset:    cfg.EmbedAsset,
 		buildSpinner:  sp,
+		embedAsset:    cfg.EmbedAsset,
 		logViewport:   logVP,
 		config:        cfg,
 		selectedAsset: cfg.LastAsset,
@@ -597,8 +597,8 @@ func (m TUIModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case logMsg:
 		m.buildLogs = append(m.buildLogs, string(msg))
-		if len(m.buildLogs) > 100 {
-			m.buildLogs = m.buildLogs[len(m.buildLogs)-100:]
+		if len(m.buildLogs) > 500 {
+			m.buildLogs = m.buildLogs[len(m.buildLogs)-500:]
 		}
 		return m, m.listenForBuildUpdates()
 
@@ -1540,6 +1540,13 @@ func (m TUIModel) View() tea.View {
 		// Two-column layout - fixed widths
 		body := lipgloss.JoinHorizontal(lipgloss.Top, mainContent, "  ", sidebar)
 
+		// Build progress below two-column layout (spans full width)
+		if m.activeTab == TabBuild {
+			if progressPanel := m.viewBuildProgress(); progressPanel != "" {
+				body = lipgloss.JoinVertical(lipgloss.Left, body, "", progressPanel)
+			}
+		}
+
 		// Footer - constrain status width to prevent layout overflow
 		statusStyle := lipgloss.NewStyle().MaxWidth(viewportW - 4).Align(lipgloss.Center)
 		footer := lipgloss.JoinVertical(lipgloss.Center,
@@ -1687,43 +1694,75 @@ func (m TUIModel) viewBuildProgress() string {
 	title := lipgloss.NewStyle().Foreground(colorAmber).Bold(true).Render("Build")
 	rows := []string{title}
 
-	for _, p := range m.buildProgress {
-		shortName := shortTargetName(p.Target)
-		var indicator, status string
-		var style lipgloss.Style
+	// Build dot progress line: ●●●◐○○○  3/7 • target: phase
+	var done, failed, inProgress int
+	var currentTarget, currentPhase string
+	total := len(m.buildProgress)
 
+	for _, p := range m.buildProgress {
 		if p.Done {
 			if p.Error != "" {
-				indicator = styleError.Render("✗")
-				status = "failed"
-				style = lipgloss.NewStyle().Foreground(colorRose)
+				failed++
 			} else {
-				indicator = styleSuccess.Render("✓")
-				status = "done"
-				style = lipgloss.NewStyle().Foreground(colorEmerald)
+				done++
 			}
 		} else {
-			indicator = m.buildSpinner.View()
-			status = p.Phase
-			style = lipgloss.NewStyle().Foreground(colorStone400)
+			if currentTarget == "" {
+				currentTarget = shortTargetName(p.Target)
+				currentPhase = p.Phase
+			}
+			inProgress++
 		}
-
-		row := fmt.Sprintf("%s %-13s %s", indicator, shortName, style.Render(status))
-		rows = append(rows, row)
 	}
 
-	// Log hint
+	// Build dots with spinner for active target
+	var dots string
+	for i, p := range m.buildProgress {
+		if p.Done {
+			if p.Error != "" {
+				dots += styleError.Render("✗")
+			} else {
+				dots += styleSuccess.Render("●")
+			}
+		} else if i == done+failed {
+			// First in-progress target - use spinner
+			dots += m.buildSpinner.View()
+		} else {
+			dots += lipgloss.NewStyle().Foreground(colorStone400).Render("○")
+		}
+	}
+
+	// Progress summary: target: crate_name
+	completed := done + failed
+	var progressText string
+	if currentTarget != "" && currentPhase != "" {
+		progressText = fmt.Sprintf("%s: %s", currentTarget, currentPhase)
+	} else if m.buildState == BuildIdle {
+		if failed > 0 {
+			progressText = fmt.Sprintf("%d/%d %s", completed, total, styleError.Render("failed"))
+		} else {
+			progressText = fmt.Sprintf("%d/%d %s", completed, total, styleSuccess.Render("done"))
+		}
+	} else {
+		progressText = fmt.Sprintf("%d/%d", completed, total)
+	}
+
+	rows = append(rows, dots+"  "+progressText)
+
+	// Log hint - show more of the log line
 	if len(m.buildLogs) > 0 {
 		lastLine := m.buildLogs[len(m.buildLogs)-1]
-		if len(lastLine) > 40 {
-			lastLine = lastLine[:37] + "..."
+		maxLen := mainBoxW + sidebarW - 15
+		if len(lastLine) > maxLen {
+			lastLine = lastLine[:maxLen-3] + "..."
 		}
 		rows = append(rows, styleStatus.Render(lastLine)+" (l=logs)")
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	// ponytail: use MaxWidth to avoid overflow, let content determine actual width
-	return styleBox.MaxWidth(mainBoxW).Render(content)
+	// Span full width (main + gap + sidebar)
+	fullWidth := mainBoxW + 2 + sidebarW
+	return styleBox.Width(fullWidth).Render(content)
 }
 
 func (m TUIModel) viewBuildTab() string {
@@ -1774,27 +1813,9 @@ func (m TUIModel) viewBuildTab() string {
 		buildBtn += "  " + msg
 	}
 
-	targetsBox := styleBox.Width(mainBoxW).Render(
+	return styleBox.Width(mainBoxW).Render(
 		lipgloss.JoinVertical(lipgloss.Left, targetTitle, "", targetContent, "", optionsRow, "", buildBtn),
 	)
-
-	// Asset info box
-	asset := m.selectedAsset
-	if asset == "" {
-		asset = "(none)"
-	}
-	assetRow := lipgloss.JoinHorizontal(lipgloss.Left,
-		styleLabel.Render("Asset:"),
-		styleValue.Render(asset),
-	)
-	assetBox := styleBox.Width(mainBoxW).Render(assetRow)
-
-	// Progress panel if building
-	progressPanel := m.viewBuildProgress()
-	if progressPanel != "" {
-		return lipgloss.JoinVertical(lipgloss.Center, targetsBox, "", assetBox, "", progressPanel)
-	}
-	return lipgloss.JoinVertical(lipgloss.Center, targetsBox, "", assetBox)
 }
 
 func (m TUIModel) viewDuckyTab() string {
