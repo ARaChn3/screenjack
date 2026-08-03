@@ -124,14 +124,43 @@ Generated scripts live in `ducky/`:
 
 ## How it works
 
-The payload:
-1. Creates a fullscreen borderless window on top of everything
-2. Loads and displays your image/GIF
-3. Hooks keyboard and mouse to block all input
-4. Monitors for the exit combo (Ctrl+Shift+Escape held for 2 seconds)
-5. Releases control when combo is detected
+```mermaid
+flowchart TD
+    A[Payload executed] --> B[Create fullscreen window]
+    B --> C[Load image/GIF]
+    C --> D[Display on screen]
+    D --> E[Grab keyboard + mouse input]
+    E --> F{Exit combo detected?}
+    F -->|No| G[Block all input]
+    G --> F
+    F -->|Yes| H[Release input grab]
+    H --> I[Close window]
+    I --> J[Exit]
+```
 
 On Linux this uses X11/xcb for window management and input grabbing. On Windows it uses the Win32 API.
+
+### Deployment flow
+
+```mermaid
+flowchart LR
+    subgraph Build
+        A[Add assets] --> B[Build payload]
+        B --> C[Generate Ducky script]
+    end
+    
+    subgraph Deploy
+        C --> D[Host payload]
+        D --> E[Flash Ducky]
+        E --> F[Plug into target]
+    end
+    
+    subgraph Execute
+        F --> G[Script downloads payload]
+        G --> H[Payload runs]
+        H --> I[Screen locked]
+    end
+```
 
 ## Guide
 
